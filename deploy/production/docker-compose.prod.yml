@@ -1,0 +1,152 @@
+# ==============================================================================
+# PharmaPredict AI — Production Multi-Container Orchestration (Issue #68 / #69)
+# Strict pharmaceutical security, non-root execution, persistent volumes & health probes.
+# ==============================================================================
+version: '3.8'
+
+networks:
+  pharmapredict-prod-net:
+    driver: bridge
+    internal: false
+
+volumes:
+  timescaledb_prod_data:
+    name: pharmapredict_timescaledb_prod_data
+  redis_prod_data:
+    name: pharmapredict_redis_prod_data
+
+services:
+  # ----------------------------------------------------------------------------
+  # 1. TimescaleDB (PostgreSQL 16 Enterprise with Time-series extension)
+  # ----------------------------------------------------------------------------
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    container_name: pharmapredict-prod-timescaledb
+    restart: unless-stopped
+    networks:
+      - pharmapredict-prod-net
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-pharmapredict}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Error: POSTGRES_PASSWORD must be configured}
+      POSTGRES_DB: ${POSTGRES_DB:-pharmapredict_db}
+    ports:
+      # Expose only if external replication or DBA connection is authorized
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - timescaledb_prod_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pharmapredict} -d ${POSTGRES_DB:-pharmapredict_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 1G
+
+  # ----------------------------------------------------------------------------
+  # 2. Redis Cache & Asynchronous Ingestion Queue
+  # ----------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: pharmapredict-prod-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:?Error: REDIS_PASSWORD required}"]
+    networks:
+      - pharmapredict-prod-net
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis_prod_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 256M
+
+  # ----------------------------------------------------------------------------
+  # 3. Flask Enterprise Backend Service (Gunicorn WSGI, non-root appuser)
+  # ----------------------------------------------------------------------------
+  backend:
+    build:
+      context: ../../backend
+      dockerfile: Dockerfile
+    container_name: pharmapredict-prod-backend
+    restart: unless-stopped
+    networks:
+      - pharmapredict-prod-net
+    environment:
+      FLASK_ENV: production
+      APP_NAME: "PharmaPredict AI"
+      APP_VERSION: "1.0.0"
+      SECRET_KEY: ${SECRET_KEY:?Error: SECRET_KEY must be configured with >=32 chars}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-pharmapredict}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-pharmapredict_db}
+      TIMESCALEDB_URL: postgresql://${POSTGRES_USER:-pharmapredict}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-pharmapredict_db}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      CORS_ORIGINS: ${CORS_ORIGINS:-https://pharmapredict.internal,http://localhost:3000}
+      AUTO_MIGRATE: "false"
+      ENFORCE_MIGRATION_CHECK: "true"
+    ports:
+      - "127.0.0.1:5000:5000"
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:5000/health/ready || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 512M
+
+  # ----------------------------------------------------------------------------
+  # 4. Next.js Enterprise Frontend Service (Standalone node runner, non-root)
+  # ----------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    container_name: pharmapredict-prod-frontend
+    restart: unless-stopped
+    networks:
+      - pharmapredict-prod-net
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      BACKEND_INTERNAL_URL: http://backend:5000
+      NEXT_PUBLIC_APP_NAME: "PharmaPredict AI"
+    ports:
+      - "3000:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3000/ || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 256M
+
