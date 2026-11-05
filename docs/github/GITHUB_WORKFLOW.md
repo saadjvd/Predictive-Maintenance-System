@@ -27,78 +27,122 @@ All issues in PharmaPredict AI follow a 3-tier parent-child hierarchy:
 ```
 
 ### Identifier Format
-- **Phase Parent:** `[P{Phase}]` (e.g., `[P01]`, `[P02]`, ..., `[P09]`)
-- **Feature:** `[P{Phase}-F{Feature}]` (e.g., `[P01-F01]`, `[P05-F02]`)
-- **Sub-Feature / Task:** `[P{Phase}-F{Feature}-S{SubFeature}]` (e.g., `[P01-F01-S01]`, `[P09-F03-S02]`)
+- **Phase Parent Epic:** `[P{Phase}]` (e.g., `[P01]`, `[P02]`, ..., `[P09]`)
+- **Feature Issue:** `[P{Phase}-F{Feature}]` (e.g., `[P01-F01]`, `[P05-F02]`)
+- **Sub-Feature / Task Issue:** `[P{Phase}-F{Feature}-S{SubFeature}]` (e.g., `[P01-F01-S01]`, `[P09-F04-S02]`)
 
 ---
 
-## 3. GitHub Label Matrix
+## 3. Strict Branching Hierarchy & Protection Rules
 
-| Label Category | Label Name | Description | Color |
+Development follows an **Issue-First** Git hierarchy:
+
+```
+                  ┌──────────────┐
+                  │     MAIN     │  ◄── Stable validated production releases only (Reviewed PR from develop)
+                  └──────▲───────┘
+                         │
+                  ┌──────┴───────┐
+                  │   DEVELOP    │  ◄── Quality integration branch (Phase PRs merge here)
+                  └──────▲───────┘
+                         │
+             ┌───────────┴───────────┐
+             │     PHASE BRANCH      │  (e.g., phase/09-factory-pilot)
+             └───────────▲───────────┘
+                         │
+             ┌───────────┴───────────┐
+             │    FEATURE BRANCH     │  (e.g., feature/P09-F04-issue-62-physical-plant-commissioning)
+             └───────────────────────┘
+```
+
+### A. MAIN Rules
+- **Stable releases only.**
+- **No direct commits, no direct pushes, and no force-pushes.**
+- No feature branches originating from `main`.
+- All merges require an approved Pull Request from `develop` passing all CI quality gates.
+
+### B. DEVELOP Rules
+- **Integration branch only.**
+- **No direct development commits.**
+- Phase branches integrate into `develop` through verified Pull Requests.
+- CI automated test battery (149 tests) and documentation verification gates must pass.
+
+### C. Phase Branches
+- Dedicated integration branch for each phase:
+  - `phase/01-foundation`
+  - `phase/02-auth-rbac`
+  - `phase/03-equipment-registry`
+  - `phase/04-opcua-ingestion`
+  - `phase/05-anomaly-detection`
+  - `phase/06-failure-prediction-rul`
+  - `phase/07-langgraph-rag`
+  - `phase/08-validation-readiness`
+  - `phase/09-factory-pilot`
+- Phase branches contain code and dependencies for their respective scope.
+
+### D. Feature Branches
+- Created **only** when independent development, testing, or review is required.
+- Do not create empty historical branches for completed work.
+- **Naming Pattern:**
+  - Feature: `feature/P{Phase}-F{Feature}-issue-{NUMBER}-{short-description}`
+  - Sub-Feature: `feature/P{Phase}-F{Feature}-S{SubFeature}-issue-{NUMBER}-{short-description}`
+- **Pull Request Target:** Feature branches PR into their corresponding **Phase Branch**, NOT `develop` or `main`.
+
+---
+
+## 4. GitHub Commit Conventions
+
+All commits must explicitly reference the GitHub issue number:
+
+```text
+feat(opcua): implement connection manager and auto-reconnect (#24)
+fix(auth): enforce password history and lockout counter (#13)
+test(prediction): add Weibull RUL survival coverage (#38)
+docs(validation): update IQ/OQ/PQ traceability matrix (#50)
+```
+
+---
+
+## 5. GitHub Label Matrix
+
+| Category | Label | Color | Description |
 | :--- | :--- | :--- | :--- |
-| **Type** | `type:phase` | Phase-level parent tracking epic | `#5319E7` |
-| | `type:feature` | Major functional feature block | `#1D76DB` |
-| | `type:subfeature` | Granular implementation task or test unit | `#006B75` |
-| | `type:bug` | Defect or regression | `#D93F0B` |
-| | `type:documentation`| Specification, GAMP 5 validation, or user docs | `#0E8A16` |
-| **Phase** | `phase:01-foundation` | Phase 1 Foundation & Shell | `#C2E0C6` |
-| | `phase:02-auth` | Phase 2 Auth, RBAC & Tenants | `#C2E0C6` |
-| | `phase:03-equipment` | Phase 3 Universal Equipment Registry | `#C2E0C6` |
-| | `phase:04-opcua` | Phase 4 Industrial IoT & OPC UA | `#C2E0C6` |
-| | `phase:05-anomaly` | Phase 5 Baselines & Anomaly Detection | `#C2E0C6` |
-| | `phase:06-prediction`| Phase 6 Failure Prediction & RUL | `#C2E0C6` |
-| | `phase:07-agents` | Phase 7 LangGraph Multi-Agent RAG | `#C2E0C6` |
-| | `phase:08-validation`| Phase 8 End-to-End Validation & Hardening | `#C2E0C6` |
-| | `phase:09-pilot` | Phase 9 Factory Pilot & Multi-Factory Scalability | `#C2E0C6` |
-| **Status** | `status:completed` | Verified with tests & repo evidence | `#0E8A16` |
-| | `status:in-progress`| Actively being developed | `#FBCA04` |
-| | `status:blocked` | Blocked by external prerequisites | `#E99695` |
-| | `status:planned` | Scheduled for future factory/cloud execution | `#CCCCCC` |
-| **Area** | `area:backend` | Flask, SQLAlchemy, Celery, REST API | `#0052CC` |
-| | `area:frontend` | Next.js, React, Tailwind CSS | `#61DAFB` |
-| | `area:ml-ai` | Scikit-learn, XGBoost, LangGraph, pgvector | `#8A2BE2` |
-| | `area:iiot` | OPC UA, Modbus, telemetry collectors | `#FF8C00` |
-| | `area:compliance` | 21 CFR Part 11, GAMP 5, Audit Trail | `#B60205` |
-
----
-
-## 4. GitHub Milestones
-
-1. **Phase 01 — Foundation & Existing Frontend/Backend Integration**
-2. **Phase 02 — Authentication, RBAC & Multi-Tenancy**
-3. **Phase 03 — Universal Equipment Registry**
-4. **Phase 04 — OPC UA Connectivity & Signal Ingestion**
-5. **Phase 05 — Data Quality, Equipment Baselines & Anomaly Detection**
-6. **Phase 06 — Failure Prediction & Remaining Useful Life (RUL)**
-7. **Phase 07 — LangGraph Multi-Agent Intelligence & RAG**
-8. **Phase 08 — End-to-End Validation & Production Readiness**
-9. **Phase 09 — Controlled Factory Pilot & Multi-Factory Scalability**
-
----
-
-## 5. Git Branching & Merge Strategy
-
-- **`main`**: Production-ready, validated code branch. Protected from direct commits.
-- **`develop`**: Integration branch for completed and verified features.
-- **`feature/{phase}-{feature-name}`**: Feature branches cut from `develop` (e.g., `feature/p09-pilot-readiness`).
-- **`bugfix/{issue-id}-{short-desc}`**: Defect remediation branches.
-- **`docs/{topic}`**: Documentation updates (e.g., `docs/phase-issue-organization`).
-
-### Commit Convention
-```
-feat(phase-09): add pilot telemetry ingestion and baseline drift validator (#XX)
-fix(auth): enforce password history and session lockout rules (#YY)
-docs(github): establish phase and issue tracking hierarchy (#ZZ)
-```
+| **Type** | `type:phase` | `#5319E7` | Phase-level parent tracking epic |
+| | `type:feature` | `#1D76DB` | Major functional feature block |
+| | `type:subfeature` | `#006B75` | Granular implementation task or test unit |
+| | `type:bug` | `#D93F0B` | Defect or regression |
+| | `type:documentation`| `#0E8A16` | Specification, GAMP 5 validation, or user docs |
+| | `type:enhancement` | `#A2EEEF` | New capability or enhancement |
+| **Phase** | `phase:01-foundation` | `#C2E0C6` | Phase 1 Foundation & Shell |
+| | `phase:02-auth` | `#C2E0C6` | Phase 2 Auth, RBAC & Tenants |
+| | `phase:03-equipment` | `#C2E0C6` | Phase 3 Universal Equipment Registry |
+| | `phase:04-opcua` | `#C2E0C6` | Phase 4 Industrial IoT & OPC UA |
+| | `phase:05-anomaly` | `#C2E0C6` | Phase 5 Baselines & Anomaly Detection |
+| | `phase:06-prediction`| `#C2E0C6` | Phase 6 Failure Prediction & RUL |
+| | `phase:07-agents` | `#C2E0C6` | Phase 7 LangGraph Multi-Agent RAG |
+| | `phase:08-validation`| `#C2E0C6` | Phase 8 End-to-End Validation & Hardening |
+| | `phase:09-pilot` | `#C2E0C6` | Phase 9 Factory Pilot & Multi-Factory Scalability |
+| **Status** | `status:completed` | `#0E8A16` | Verified with automated tests & repo evidence |
+| | `status:in-progress`| `#FBCA04` | Actively being developed |
+| | `status:blocked` | `#E99695` | Blocked by external prerequisites |
+| | `status:planned` | `#CCCCCC` | Scheduled for future factory/cloud execution |
+| **Area** | `area:backend` | `#0052CC` | Flask, SQLAlchemy, REST API |
+| | `area:frontend` | `#61DAFB` | Next.js, React, Tailwind CSS |
+| | `area:ml-ai` | `#8A2BE2` | Scikit-learn, LangGraph, pgvector |
+| | `area:iiot` | `#FF8C00` | OPC UA, Modbus, telemetry collectors |
+| | `area:compliance` | `#B60205` | 21 CFR Part 11, GAMP 5, Audit Trail |
+| | `area:devops` | `#F9D0C4` | CI/CD, containerization, deployment runbooks |
+| **Priority**| `priority:critical`| `#B60205` | Critical operational priority |
+| | `priority:high` | `#D93F0B` | High priority |
+| | `priority:medium` | `#FBCA04` | Medium priority |
+| | `priority:low` | `#0E8A16` | Low priority |
 
 ---
 
 ## 6. Closing Criteria for Issues
 
-An issue may ONLY be moved to `Closed` (`status:completed`) when:
-1. **Source Code Evidence**: Implementation exists in the repository.
-2. **Automated Verification**: Associated unit or integration tests pass without errors.
-3. **Audit Trail Compliance**: Any critical state change adheres to GAMP 5 / 21 CFR Part 11 audit logging.
-4. **No Unfulfilled Production Dependencies**: Tasks requiring physical site authorization remain `status:planned` / `Open`.
-
+An issue may **ONLY** be closed (`status:completed`) when:
+1. **Source Code Evidence:** Implementation exists in the repository.
+2. **Automated Verification:** Associated unit or integration tests pass without errors.
+3. **Audit Trail Compliance:** Any critical state change adheres to GAMP 5 / 21 CFR Part 11 audit logging.
+4. **No Unfulfilled Physical Prerequisites:** Any work requiring on-site plant authorization (e.g. physical PLC connection) remains `status:planned` / `Open`.
