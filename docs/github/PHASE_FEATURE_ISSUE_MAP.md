@@ -3,7 +3,8 @@
 This document provides the definitive retrospective mapping of all completed, verified, and planned work across **Phase 01 through Phase 09** for **PharmaPredict AI**, mapped directly to repository code, test evidence, and live GitHub issues.
 
 Repository: **[saadjvd/Predictive-Maintenance-System](https://github.com/saadjvd/Predictive-Maintenance-System)**  
-Pull Request: **[PR #1: docs(github): Phase 1-9 issue hierarchy and workflow organization](https://github.com/saadjvd/Predictive-Maintenance-System/pull/1)**
+Pull Request: **[PR #1: docs(github): Phase 1-9 issue hierarchy and workflow organization](https://github.com/saadjvd/Predictive-Maintenance-System/pull/1)**  
+GitHub Project: **[PharmaPredict AI — Delivery Roadmap (Project #1)](https://github.com/users/saadjvd/projects/1)**
 
 ---
 
