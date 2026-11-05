@@ -1,0 +1,59 @@
+version: '3.8'
+
+services:
+  # TimescaleDB (PostgreSQL with Time-series extension)
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    container_name: pharmapredict-timescaledb
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-pharmapredict}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pharma_secure_pass}
+      POSTGRES_DB: ${POSTGRES_DB:-pharmapredict_db}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pharmapredict -d pharmapredict_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis for task queuing and telemetry caching
+  redis:
+    image: redis:7-alpine
+    container_name: pharmapredict-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+
+  # Flask Backend Service
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: pharmapredict-backend
+    restart: unless-stopped
+    environment:
+      FLASK_ENV: development
+      FLASK_DEBUG: "True"
+      DATABASE_URL: postgresql://pharmapredict:pharma_secure_pass@timescaledb:5432/pharmapredict_db
+      TIMESCALEDB_URL: postgresql://pharmapredict:pharma_secure_pass@timescaledb:5432/pharmapredict_db
+      REDIS_URL: redis://redis:6379/0
+      CORS_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
+      SECRET_KEY: ${SECRET_KEY:-dev-secret-key-pharmapredict}
+    ports:
+      - "5000:5000"
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+
+volumes:
+  pgdata:
+  redisdata:
+

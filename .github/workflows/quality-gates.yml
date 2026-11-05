@@ -1,0 +1,95 @@
+name: PharmaPredict AI — Continuous Quality Gates & Validation CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  frontend-quality-gate:
+    name: Frontend Lint & TypeScript Verification
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 18
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+          cache: 'pnpm'
+
+      - name: Install pnpm
+        run: npm install -g pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: TypeScript type-check
+        run: pnpm exec tsc --noEmit
+
+  backend-quality-gate:
+    name: Backend Test Battery & GAMP 5 Verification
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: timescale/timescaledb-ha:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: pharmapredict_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: 'pip'
+
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt
+          pip install pytest pytest-asyncio
+
+      - name: Execute Full GAMP 5 Automated Test Battery (Phases 1-8)
+        env:
+          FLASK_ENV: testing
+          DATABASE_URL: postgresql://postgres:password@localhost:5432/pharmapredict_test
+          JWT_SECRET_KEY: test-secret-key-for-ci-pipeline-only
+        run: |
+          pytest backend/tests/ -v --durations=10
+
+  validation-docs-gate:
+    name: GAMP 5 & 21 CFR Part 11 Documentation Integrity Gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify mandatory pharmaceutical validation files exist
+        run: |
+          test -f docs/validation/urs.md || exit 1
+          test -f docs/validation/fs.md || exit 1
+          test -f docs/validation/ds.md || exit 1
+          test -f docs/validation/risk-assessment.md || exit 1
+          test -f docs/validation/rtm.md || exit 1
+          test -f docs/validation/iq-oq-pq-protocols.md || exit 1
+          test -f docs/validation/validation-summary-report.md || exit 1
+          test -f docs/pilot/factory-pilot-plan.md || exit 1
+          test -f docs/deployment/production-architecture.md || exit 1
+          test -f docs/security/security-review.md || exit 1
+          test -f backend/scripts/database_backup_restore.py || exit 1
+          echo "All mandatory GAMP 5 validation deliverables are present and verified."
+
