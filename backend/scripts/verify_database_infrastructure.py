@@ -104,8 +104,8 @@ def verify_live_database():
         # Gate Step 3: Apply Alembic Baseline Migration (upgrade head)
         # ---------------------------------------------------------------------
         logger.info("--> Gate Step 3: Applying migrations (flask db upgrade head)...")
-        upgrade_success = apply_migrations(target_revision="head", app=app)
-        assert upgrade_success is True, "apply_migrations(target_revision='head') failed"
+        upgrade_success, msg = apply_migrations(target_rev="head")
+        assert upgrade_success is True, f"apply_migrations failed: {msg}"
         logger.info("PASSED: Alembic baseline migration applied successfully.")
 
         # ---------------------------------------------------------------------
