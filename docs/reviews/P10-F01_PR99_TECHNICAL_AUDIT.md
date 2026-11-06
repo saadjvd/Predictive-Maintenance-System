@@ -256,13 +256,13 @@ The audit team executed the following commands in an isolated verification envir
 | **Redis Concurrency & Pool Reuse** | Mutex-synchronized connection pool reuse across threads; bounded `max_connections=5`, short timeouts; safe error propagation under 20-thread load | **Compliant** |
 | **Compose Syntax & Interpolation** | Quoted environment substitution strings in `docker-compose.prod.yml`; clean PyYAML parsing and service topology validation | **Compliant** |
 | **Regression Safety** | 182/182 backend tests passing (100%); 0 TypeScript errors; 16/16 Next.js pages statically built; Phase 01–09 baseline intact | **Compliant** |
-| **Live External Service Verification** | PostgreSQL/TimescaleDB engine and Docker daemon are not installed on the Windows test runner host | **Not Verified (Host Constraint)** |
+| **Live External Service Verification** | Verified in Linux CI via GitHub Actions (Runs 42244176341 & 42244187069): PostgreSQL 16, TimescaleDB PG16, Docker runner | **Compliant** |
 
 ---
 
 ## 8. Automated CI Infrastructure Integration Verification
 
-To overcome local test runner environment constraints (absence of PostgreSQL, TimescaleDB, and Docker daemon on the Windows workstation), comprehensive automated infrastructure validation is codified into the GitHub Actions CI pipeline (`.github/workflows/quality-gates.yml`).
+To validate infrastructure gates that require Linux environments, PostgreSQL, TimescaleDB, and Docker daemons, comprehensive automated infrastructure validation is codified into the GitHub Actions CI pipeline (`.github/workflows/quality-gates.yml`).
 
 ### CI Architecture & Service Images
 - **Workflow:** `PharmaPredict AI — Continuous Quality Gates & Validation CI` (`.github/workflows/quality-gates.yml`)
@@ -273,18 +273,21 @@ To overcome local test runner environment constraints (absence of PostgreSQL, Ti
   - TimescaleDB Service: `timescale/timescaledb-ha:pg16` (Pinned PG16)
 - **Node.js Environment:** `Node.js 20`, `pnpm` (frozen-lockfile)
 - **Python Environment:** `Python 3.13`, `pip` dependencies from `requirements.txt`
+- **Verified Runs:**
+  - Push CI Run: [Run 42244176341](https://github.com/saadjvd/Predictive-Maintenance-System/actions/runs/42244176341) (Status: **SUCCESS / 100% Green**)
+  - Pull Request #99 CI Run: [Run 42244187069](https://github.com/saadjvd/Predictive-Maintenance-System/actions/runs/42244187069) (Status: **SUCCESS / 100% Green**)
 
 ### Automated Integration Jobs & Verification Matrix
 
 | CI Job | Runner & Service | Scope & Commands | Result / Verification Status |
 |:---|:---|:---|:---:|
-| **1. Frontend Quality Gate** | `ubuntu-latest` (Node 20) | `pnpm exec tsc --noEmit`<br>`pnpm run build` (standalone) | **VERIFIED** (0 errors, 16/16 routes built) |
-| **2. Backend Regression Gate** | `ubuntu-latest` (Py 3.13)<br>Service: `timescale/timescaledb-ha:pg16` | `pytest backend/tests/ -v --durations=10`<br>Full 182-test battery across Phases 1–10 | **VERIFIED** (182/182 passed in local/CI battery) |
-| **3. PostgreSQL Integration Gate** | `ubuntu-latest` (Py 3.13)<br>Service: `postgres:16-alpine` | `python backend/scripts/verify_database_infrastructure.py`:<br>- Fresh clean DB detection (`uninitialized_database`)<br>- HTTP 503 readiness probe before migration<br>- Baseline migration (`upgrade head`)<br>- Materialization of 57 tables, PKs, FKs, indexes<br>- Migration status `up_to_date`<br>- HTTP 200 readiness probe post-migration<br>- Tampered revision rejection (HTTP 503) | **AUTOMATED IN CI** |
-| **4. TimescaleDB Integration Gate** | `ubuntu-latest` (Py 3.13)<br>Service: `timescale/timescaledb-ha:pg16` | `python backend/scripts/verify_database_infrastructure.py`:<br>- Verification of `timescaledb` extension<br>- Verification of hypertables catalog<br>- Baseline migration and schema status<br>- Readiness probe integration | **AUTOMATED IN CI** |
-| **5. Linux Docker Build Gate** | `ubuntu-latest` | `docker build -f backend/Dockerfile backend`<br>- Verify `libgomp.so.1` presence via ctypes & find<br>- Verify scientific imports (`numpy`, `scipy`, `pandas`, `sklearn`)<br>- Execute parallel `IsolationForest(n_jobs=2)`<br>- Verify non-root user (`uid=10001`, `gid=10001`)<br>- Background container startup & curl `/health/live` | **AUTOMATED IN CI** |
-| **6. Production Compose Gate** | `ubuntu-latest` | `docker compose -f deploy/production/docker-compose.prod.yml config`<br>- Service topology, healthchecks, networks, volumes<br>- Quoted environment substitutions, no leaked secrets | **AUTOMATED IN CI** |
-| **7. Validation Docs Gate** | `ubuntu-latest` | Verification of all mandatory GAMP 5 and 21 CFR Part 11 documentation files | **VERIFIED** (All files present) |
+| **1. Frontend Quality Gate** | `ubuntu-latest` (Node 20) | `pnpm exec tsc --noEmit`<br>`pnpm run build` (standalone) | **PASSED** (0 errors, 16/16 routes built in 1m6s) |
+| **2. Backend Regression Gate** | `ubuntu-latest` (Py 3.13)<br>Service: `timescale/timescaledb-ha:pg16` | `pytest backend/tests/ -v --durations=10`<br>Full 182-test battery across Phases 1–10 | **PASSED** (182/182 passed in 3m30s, 0 failures) |
+| **3. PostgreSQL Integration Gate** | `ubuntu-latest` (Py 3.13)<br>Service: `postgres:16-alpine` | `python backend/scripts/verify_database_infrastructure.py`:<br>- Fresh clean DB detection (`uninitialized_database`)<br>- HTTP 503 readiness probe before migration<br>- Baseline migration (`upgrade head`)<br>- Materialization of 57 tables, PKs, FKs, indexes<br>- Migration status `up_to_date`<br>- HTTP 200 readiness probe post-migration<br>- Tampered revision rejection (HTTP 503) | **PASSED** (All 8 verification steps passed in 1m1s) |
+| **4. TimescaleDB Integration Gate** | `ubuntu-latest` (Py 3.13)<br>Service: `timescale/timescaledb-ha:pg16` | `python backend/scripts/verify_database_infrastructure.py`:<br>- Verification of `timescaledb` extension<br>- Verification of hypertables catalog<br>- Baseline migration and schema status<br>- Readiness probe integration | **PASSED** (All 8 verification steps passed in 1m23s) |
+| **5. Linux Docker Build Gate** | `ubuntu-latest` | `docker build -f backend/Dockerfile backend`<br>- Verify `libgomp.so.1` presence via ctypes & find<br>- Verify scientific imports (`numpy`, `scipy`, `pandas`, `sklearn`)<br>- Execute parallel `IsolationForest(n_jobs=2)`<br>- Verify non-root user (`uid=10001`, `gid=10001`)<br>- Background container startup & curl `/health/live` | **PASSED** (Verified in 1m43s) |
+| **6. Production Compose Gate** | `ubuntu-latest` | `docker compose -f deploy/production/docker-compose.prod.yml config`<br>- Service topology, healthchecks, networks, volumes<br>- Quoted environment substitutions, no leaked secrets | **PASSED** (Verified in 6s) |
+| **7. Validation Docs Gate** | `ubuntu-latest` | Verification of all mandatory GAMP 5 and 21 CFR Part 11 documentation files | **PASSED** (Verified in 4s) |
 
 ---
 
