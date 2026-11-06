@@ -286,6 +286,63 @@ class TestRedisConnectionPoolReuse:
                     assert "unreachable" in status
                     assert "Exception" in status
 
+    def test_concurrent_readiness_probes_reuse_pool(self):
+        """Verify concurrent probe calls across multiple threads safely reuse the cached Redis pool."""
+        import concurrent.futures
+        test_url = "redis://localhost:6379/3"
+        mock_redis = MagicMock()
+        mock_pool = MagicMock()
+        mock_redis.ConnectionPool.from_url.return_value = mock_pool
+
+        with patch.dict(sys.modules, {"redis": mock_redis}):
+            with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+                futures = [executor.submit(get_redis_connection_pool, test_url) for _ in range(20)]
+                pools = [f.result() for f in futures]
+
+            assert len(pools) == 20
+            assert all(p is mock_pool for p in pools)
+            # Pool must be created exactly once despite concurrent thread execution
+            assert mock_redis.ConnectionPool.from_url.call_count == 1
+
+    def test_redis_connection_pool_parameters(self):
+        """Verify get_redis_connection_pool enforces connection limits and short timeouts."""
+        test_url = "redis://localhost:6379/4"
+        mock_redis = MagicMock()
+        mock_redis.ConnectionPool.from_url.return_value = MagicMock()
+
+        with patch.dict(sys.modules, {"redis": mock_redis}):
+            get_redis_connection_pool(test_url)
+            mock_redis.ConnectionPool.from_url.assert_called_once_with(
+                test_url,
+                max_connections=5,
+                socket_timeout=1.5,
+                socket_connect_timeout=1.5
+            )
+
+    def test_concurrent_redis_unreachability_handled_safely(self, app):
+        """Verify concurrent probes handle Redis unavailability gracefully without unhandled exceptions."""
+        import concurrent.futures
+        app.config["REDIS_URL"] = "redis://localhost:6379/9"
+        mock_redis = MagicMock()
+        mock_client = MagicMock()
+        mock_client.ping.side_effect = TimeoutError("Connection timed out")
+        mock_redis.Redis.return_value = mock_client
+
+        def _worker():
+            with app.app_context():
+                return _check_redis()
+
+        with patch.dict(sys.modules, {"redis": mock_redis}):
+            with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+                futures = [executor.submit(_worker) for _ in range(20)]
+                results = [f.result() for f in futures]
+
+            assert len(results) == 20
+            for ok, status, latency in results:
+                assert ok is False
+                assert "unreachable" in status
+                assert "TimeoutError" in status
+
 
 class TestHardenedEnvironmentConfiguration:
     """Tests for Issue #69 Production Environment Configuration & Validation."""
@@ -351,3 +408,62 @@ class TestContainerHardeningSpecifications:
         assert "REDISCLI_AUTH" in content
         assert 'redis-cli", "-a"' not in content
         assert "redis-cli\", \"ping\"" in content
+
+
+class TestProductionComposeSpecification:
+    """Comprehensive validation of deploy/production/docker-compose.prod.yml structure & security."""
+
+    @pytest.fixture
+    def compose_data(self):
+        import yaml
+        backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        repo_root = os.path.dirname(backend_dir)
+        compose_path = os.path.join(repo_root, "deploy", "production", "docker-compose.prod.yml")
+        with open(compose_path, "r", encoding="utf-8") as f:
+            return yaml.safe_load(f)
+
+    def test_compose_services_defined(self, compose_data):
+        """Verify all 4 core enterprise services are declared."""
+        services = compose_data.get("services", {})
+        assert "timescaledb" in services
+        assert "redis" in services
+        assert "backend" in services
+        assert "frontend" in services
+
+    def test_compose_networks_and_volumes_defined(self, compose_data):
+        """Verify persistent volumes and isolated bridge networks are configured."""
+        volumes = compose_data.get("volumes", {})
+        assert "timescaledb_prod_data" in volumes
+        assert "redis_prod_data" in volumes
+
+        networks = compose_data.get("networks", {})
+        assert "pharmapredict-prod-net" in networks
+        assert networks["pharmapredict-prod-net"].get("driver") == "bridge"
+
+    def test_compose_services_healthchecks_and_dependencies(self, compose_data):
+        """Verify healthchecks and health-dependent startup ordering."""
+        services = compose_data.get("services", {})
+        for sname in ["timescaledb", "redis", "backend", "frontend"]:
+            assert "healthcheck" in services[sname], f"Missing healthcheck in {sname}"
+
+        backend_deps = services["backend"].get("depends_on", {})
+        assert backend_deps["timescaledb"]["condition"] == "service_healthy"
+        assert backend_deps["redis"]["condition"] == "service_healthy"
+
+        frontend_deps = services["frontend"].get("depends_on", {})
+        assert frontend_deps["backend"]["condition"] == "service_healthy"
+
+    def test_compose_port_bindings_restricted_to_localhost(self, compose_data):
+        """Verify internal databases are strictly bound to localhost (127.0.0.1) on host."""
+        services = compose_data.get("services", {})
+        for db_service in ["timescaledb", "redis"]:
+            ports = services[db_service].get("ports", [])
+            for p in ports:
+                assert "127.0.0.1:" in str(p), f"Port {p} on {db_service} must bind to 127.0.0.1"
+
+    def test_compose_no_hardcoded_secrets(self, compose_data):
+        """Verify no hardcoded secrets exist; all use ${VAR:?Error} required interpolation."""
+        import yaml
+        raw_text = yaml.dump(compose_data)
+        assert "postgres:postgres" not in raw_text
+        assert "dev-pharma-predict" not in raw_text

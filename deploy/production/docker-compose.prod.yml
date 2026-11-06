@@ -27,7 +27,7 @@ services:
       - pharmapredict-prod-net
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-pharmapredict}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Error: POSTGRES_PASSWORD must be configured}
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?Error: POSTGRES_PASSWORD must be configured}"
       POSTGRES_DB: ${POSTGRES_DB:-pharmapredict_db}
     ports:
       # Expose only if external replication or DBA connection is authorized
@@ -56,7 +56,7 @@ services:
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:?Error: REDIS_PASSWORD required}"]
     environment:
-      - REDISCLI_AUTH=${REDIS_PASSWORD:?Error: REDIS_PASSWORD required}
+      - REDISCLI_AUTH="${REDIS_PASSWORD:?Error: REDIS_PASSWORD required}"
     networks:
       - pharmapredict-prod-net
     ports:
@@ -91,7 +91,7 @@ services:
       FLASK_ENV: production
       APP_NAME: "PharmaPredict AI"
       APP_VERSION: "1.0.0"
-      SECRET_KEY: ${SECRET_KEY:?Error: SECRET_KEY must be configured with >=32 chars}
+      SECRET_KEY: "${SECRET_KEY:?Error: SECRET_KEY must be configured with >=32 chars}"
       DATABASE_URL: postgresql://${POSTGRES_USER:-pharmapredict}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-pharmapredict_db}
       TIMESCALEDB_URL: postgresql://${POSTGRES_USER:-pharmapredict}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-pharmapredict_db}
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0

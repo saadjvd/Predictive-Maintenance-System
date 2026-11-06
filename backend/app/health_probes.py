@@ -11,6 +11,7 @@ Endpoints:
 """
 import os
 import time
+import threading
 from datetime import datetime, timezone
 from typing import Dict, Any, Tuple, Optional
 from flask import Blueprint, jsonify, current_app
@@ -21,6 +22,7 @@ health_probes_bp = Blueprint("health_probes", __name__)
 
 _PROCESS_START_TIME = datetime.now(timezone.utc)
 _REDIS_POOLS: Dict[str, Any] = {}
+_POOL_LOCK = threading.Lock()
 
 
 def get_redis_connection_pool(redis_url: str):
@@ -29,25 +31,27 @@ def get_redis_connection_pool(redis_url: str):
     Reuses existing pool across probe invocations to prevent socket churn.
     """
     import redis
-    if redis_url not in _REDIS_POOLS:
-        _REDIS_POOLS[redis_url] = redis.ConnectionPool.from_url(
-            redis_url,
-            max_connections=5,
-            socket_timeout=1.5,
-            socket_connect_timeout=1.5
-        )
-    return _REDIS_POOLS[redis_url]
+    with _POOL_LOCK:
+        if redis_url not in _REDIS_POOLS:
+            _REDIS_POOLS[redis_url] = redis.ConnectionPool.from_url(
+                redis_url,
+                max_connections=5,
+                socket_timeout=1.5,
+                socket_connect_timeout=1.5
+            )
+        return _REDIS_POOLS[redis_url]
 
 
 def reset_redis_connection_pools():
     """Close and clear all cached Redis connection pools (used during shutdown / testing)."""
     global _REDIS_POOLS
-    for pool in _REDIS_POOLS.values():
-        try:
-            pool.disconnect()
-        except Exception:
-            pass
-    _REDIS_POOLS.clear()
+    with _POOL_LOCK:
+        for pool in _REDIS_POOLS.values():
+            try:
+                pool.disconnect()
+            except Exception:
+                pass
+        _REDIS_POOLS.clear()
 
 
 def _check_database() -> Tuple[bool, str, float]:
