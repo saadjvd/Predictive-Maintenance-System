@@ -1087,22 +1087,24 @@ def upgrade():
     # -------------------------------------------------------------------------
     bind = op.get_bind()
     if bind.dialect.name == 'postgresql':
-        try:
-            op.execute(sa.text("CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;"))
-            op.execute(sa.text("""
-                DO $$
-                BEGIN
-                    IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'timescaledb') THEN
-                        BEGIN
-                            PERFORM create_hypertable('signal_readings', 'source_timestamp', if_not_exists => TRUE, migrate_data => TRUE);
-                        EXCEPTION WHEN OTHERS THEN
-                            RAISE NOTICE 'TimescaleDB hypertable conversion skipped: %', SQLERRM;
-                        END;
-                    END IF;
-                END $$;
-            """))
-        except Exception:
-            pass
+        has_timescale = bind.execute(sa.text("SELECT 1 FROM pg_available_extensions WHERE name = 'timescaledb'")).scalar()
+        if has_timescale:
+            try:
+                op.execute(sa.text("CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;"))
+                op.execute(sa.text("""
+                    DO $$
+                    BEGIN
+                        IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'timescaledb') THEN
+                            BEGIN
+                                PERFORM create_hypertable('signal_readings', 'source_timestamp', if_not_exists => TRUE, migrate_data => TRUE);
+                            EXCEPTION WHEN OTHERS THEN
+                                RAISE NOTICE 'TimescaleDB hypertable conversion skipped: %', SQLERRM;
+                            END;
+                        END IF;
+                    END $$;
+                """))
+            except Exception:
+                pass
 
     op.create_table('signal_validation_results',
     sa.Column('id', sa.String(length=36), nullable=False),
