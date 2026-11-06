@@ -54,6 +54,8 @@ def verify_live_database():
         SQLALCHEMY_DATABASE_URI = database_url
         ENFORCE_MIGRATION_CHECK = True
         AUTO_MIGRATE = False
+        SKIP_DB_CREATE_ALL = True
+        SKIP_STARTUP_MIGRATION_CHECK = True
         SECRET_KEY = "a" * 48
 
     app = create_app(VerificationConfig)

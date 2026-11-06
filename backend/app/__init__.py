@@ -16,7 +16,16 @@ def create_app(config_name=None):
         config_name = os.getenv("FLASK_ENV", "development")
 
     flask_app = Flask(__name__)
-    config_obj = config_by_name.get(config_name, config_by_name["default"])
+
+    if isinstance(config_name, str):
+        env_name = config_name
+        config_obj = config_by_name.get(config_name, config_by_name["default"])
+    elif isinstance(config_name, type) or hasattr(config_name, "__dict__"):
+        config_obj = config_name
+        env_name = getattr(config_obj, "ENV", getattr(config_obj, "FLASK_ENV", "staging"))
+    else:
+        config_obj = config_by_name["default"]
+        env_name = "development"
 
     # Strict configuration validation (e.g. Production secret keys, DB URIs)
     if hasattr(config_obj, "validate") and callable(config_obj.validate):
@@ -36,7 +45,13 @@ def create_app(config_name=None):
 
     with flask_app.app_context():
         # In non-production environments, ensure tables are created automatically if needed
-        if config_name not in ("production", "staging"):
+        # (Skip db.create_all if in production/staging or if explicitly disabled/enforcing migrations)
+        should_create_all = (
+            env_name not in ("production", "staging")
+            and not flask_app.config.get("ENFORCE_MIGRATION_CHECK")
+            and not flask_app.config.get("SKIP_DB_CREATE_ALL")
+        )
+        if should_create_all:
             db.create_all()
 
     # Register canonical root-level infrastructure health probes (/health/live, /health/ready, /health/system)
@@ -46,7 +61,11 @@ def create_app(config_name=None):
     flask_app.register_blueprint(api_v1_bp)
 
     # Startup database migration and schema safety verification
-    if config_name in ("production", "staging") or flask_app.config.get("ENFORCE_MIGRATION_CHECK"):
+    should_verify_startup = (
+        (env_name in ("production", "staging") or flask_app.config.get("ENFORCE_MIGRATION_CHECK"))
+        and not flask_app.config.get("SKIP_STARTUP_MIGRATION_CHECK")
+    )
+    if should_verify_startup:
         from app.database_migrations import verify_database_on_startup
         verify_database_on_startup(flask_app)
 
