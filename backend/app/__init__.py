@@ -34,8 +34,10 @@ def create_app(config_name=None):
     flask_app.config.from_object(config_obj)
 
     # Initialize extensions
+    backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    migrations_dir = os.path.join(backend_dir, "migrations")
     db.init_app(flask_app)
-    migrate.init_app(flask_app, db)
+    migrate.init_app(flask_app, db, directory=migrations_dir)
     cors.init_app(
         flask_app,
         resources={r"/api/*": {"origins": flask_app.config.get("CORS_ORIGINS", "*")}},

@@ -193,15 +193,19 @@ def check_migration_status(app: Optional[Flask] = None) -> Dict[str, Any]:
     }
 
 
-def apply_migrations(target_rev: str = "head") -> Tuple[bool, str]:
+def apply_migrations(target_rev: str = "head", directory: Optional[str] = None) -> Tuple[bool, str]:
     """
     Safely apply Alembic migrations to the database.
     Used by entrypoint scripts, migration init containers, or automated startup runners.
     """
     try:
         from flask_migrate import upgrade
-        logger.info(f"Applying database migrations to revision: {target_rev}...")
-        upgrade(revision=target_rev)
+        if not directory:
+            backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            candidate = os.path.join(backend_dir, "migrations")
+            directory = candidate if os.path.exists(candidate) else "migrations"
+        logger.info(f"Applying database migrations to revision: {target_rev} using directory: {directory}...")
+        upgrade(directory=directory, revision=target_rev)
         logger.info("Database migrations successfully applied.")
         return True, "Migrations successfully applied."
     except Exception as exc:
