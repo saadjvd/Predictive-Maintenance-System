@@ -22,9 +22,10 @@ FROM python:3.12-slim AS runner
 
 WORKDIR /app
 
-# Install minimal runtime dependencies (libpq for postgres, curl for probes)
+# Install minimal runtime dependencies (libpq for postgres, libgomp1 for OpenMP/scikit-learn, curl for probes)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
+    libgomp1 \
     curl \
     && rm -rf /var/lib/apt/lists/*
 

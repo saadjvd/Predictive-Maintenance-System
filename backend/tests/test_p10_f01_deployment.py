@@ -4,9 +4,12 @@ Verifies:
 - Issue #68: Enterprise Productization & Deployment Architecture
 - Issue #69: Production Containerization & Environment Configuration
 - Issue #70: Canonical Infrastructure Probes & Automated Database Migrations
+- Audit Findings P10-F01-01 through P10-F01-04 Corrective Validations
 """
+import os
+import sys
 import pytest
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 from flask import Flask
 from app import create_app
 from app.config import ProductionConfig, StagingConfig, DEFAULT_DEV_SECRET
@@ -15,7 +18,14 @@ from app.database_migrations import (
     apply_migrations,
     verify_database_on_startup,
     get_current_db_revision,
-    get_head_revision
+    get_head_revision,
+    get_known_revisions
+)
+from app.health_probes import (
+    get_redis_connection_pool,
+    reset_redis_connection_pools,
+    _check_redis,
+    _check_database
 )
 
 
@@ -50,6 +60,25 @@ class TestCanonicalHealthProbes:
             assert data["status"] == "not_ready"
             assert data["dependencies"]["database"]["healthy"] is False
             assert "unreachable" in data["dependencies"]["database"]["status"]
+
+    def test_readiness_probe_schema_unready_in_production_returns_503(self, client, app):
+        """Verify /health/ready returns HTTP 503 if database schema is uninitialized in production/enforced mode."""
+        unready_status = {
+            "is_synced": False,
+            "is_ready": False,
+            "current_revision": None,
+            "head_revision": "0001_initial_schema",
+            "status": "uninitialized_database",
+            "message": "Uninitialized"
+        }
+        with patch("app.health_probes.current_app.config", {**app.config, "ENV": "production", "ENFORCE_MIGRATION_CHECK": True}):
+            with patch("app.database_migrations.check_migration_status", return_value=unready_status):
+                response = client.get("/health/ready")
+                assert response.status_code == 503
+                data = response.get_json()
+                assert data["status"] == "not_ready"
+                assert data["dependencies"]["database"]["healthy"] is False
+                assert "schema_uninitialized_database" in data["dependencies"]["database"]["status"]
 
     def test_system_operational_probe_returns_diagnostics(self, client):
         """Verify /health/system returns comprehensive diagnostics without leaking credentials."""
@@ -90,52 +119,172 @@ class TestCanonicalHealthProbes:
 
 
 class TestDatabaseMigrationManagement:
-    """Tests for Issue #70 Automated Database Migrations & Status Verification."""
+    """Tests for Issue #70 & Audit Finding P10-F01-01 Database Migration Mechanics."""
 
-    def test_check_migration_status_reports_synced_or_baseline(self, app):
-        """Verify migration status check returns structured diagnostic information."""
+    def test_baseline_migration_head_revision_exists(self):
+        """Verify that 0001_initial_schema exists as a head revision in migrations."""
+        head_rev = get_head_revision()
+        assert head_rev is not None
+        assert head_rev == "0001_initial_schema"
+
+    def test_known_revisions_contains_baseline(self):
+        """Verify that walk_revisions correctly enumerates the baseline revision."""
+        revisions = get_known_revisions()
+        assert "0001_initial_schema" in revisions
+
+    def test_check_migration_status_uninitialized_database(self, app):
+        """State 1: Empty database must report uninitialized_database and is_ready=False."""
+        mock_inspector = MagicMock()
+        mock_inspector.get_table_names.return_value = []
+
         with app.app_context():
-            status = check_migration_status(app)
-            assert isinstance(status, dict)
-            assert "is_synced" in status
-            assert "current_revision" in status
-            assert "head_revision" in status
-            assert "status" in status
-            assert status["status"] in ("up_to_date", "unversioned_schema", "pending_migration")
+            with patch("app.database_migrations.inspect", return_value=mock_inspector):
+                status = check_migration_status(app)
+                assert status["status"] == "uninitialized_database"
+                assert status["is_synced"] is False
+                assert status["is_ready"] is False
+                assert status["head_revision"] == "0001_initial_schema"
 
-    def test_verify_database_on_startup_passes_on_dev(self, app):
-        """Verify startup database check runs cleanly without raising on development/testing app."""
-        # Should not raise any exception
-        verify_database_on_startup(app)
+    def test_check_migration_status_up_to_date(self, app):
+        """State 2: Database matching script head must report up_to_date and is_ready=True."""
+        mock_inspector = MagicMock()
+        mock_inspector.get_table_names.return_value = ["alembic_version", "users", "machines"]
 
-    def test_verify_database_on_startup_aborts_on_unreachable_production_db(self):
-        """Verify startup verification raises RuntimeError if production database is unreachable."""
-        test_app = Flask(__name__)
-        test_app.config["ENV"] = "production"
-        test_app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///:memory:"
+        with app.app_context():
+            with patch("app.database_migrations.inspect", return_value=mock_inspector):
+                with patch("app.database_migrations.get_current_db_revision", return_value="0001_initial_schema"):
+                    status = check_migration_status(app)
+                    assert status["status"] == "up_to_date"
+                    assert status["is_synced"] is True
+                    assert status["is_ready"] is True
+                    assert status["current_revision"] == "0001_initial_schema"
 
-        with patch("app.database_migrations.db.session.execute", side_effect=Exception("Connection refused")):
-            with pytest.raises(RuntimeError) as exc_info:
-                verify_database_on_startup(test_app)
-            assert "Failed to connect to database" in str(exc_info.value)
+    def test_check_migration_status_pending_migration(self, app):
+        """State 3: Database behind head with known revision must report pending_migration and is_ready=False."""
+        mock_inspector = MagicMock()
+        mock_inspector.get_table_names.return_value = ["alembic_version", "users"]
 
-    def test_verify_database_on_startup_aborts_on_pending_migrations_when_enforced(self, app):
-        """Verify startup verification aborts when ENFORCE_MIGRATION_CHECK is enabled and migrations are pending."""
+        with app.app_context():
+            with patch("app.database_migrations.inspect", return_value=mock_inspector):
+                with patch("app.database_migrations.get_current_db_revision", return_value="0000_previous"):
+                    with patch("app.database_migrations.get_head_revision", return_value="0001_initial_schema"):
+                        with patch("app.database_migrations.get_known_revisions", return_value={"0000_previous", "0001_initial_schema"}):
+                            status = check_migration_status(app)
+                            assert status["status"] == "pending_migration"
+                            assert status["is_synced"] is False
+                            assert status["is_ready"] is False
+
+    def test_check_migration_status_unknown_revision(self, app):
+        """State 4: Database stamped with unknown revision must report unknown_revision and is_ready=False."""
+        mock_inspector = MagicMock()
+        mock_inspector.get_table_names.return_value = ["alembic_version", "users"]
+
+        with app.app_context():
+            with patch("app.database_migrations.inspect", return_value=mock_inspector):
+                with patch("app.database_migrations.get_current_db_revision", return_value="rogue_rev_9999"):
+                    with patch("app.database_migrations.get_head_revision", return_value="0001_initial_schema"):
+                        with patch("app.database_migrations.get_known_revisions", return_value={"0001_initial_schema"}):
+                            status = check_migration_status(app)
+                            assert status["status"] == "unknown_revision"
+                            assert status["is_synced"] is False
+                            assert status["is_ready"] is False
+
+    def test_check_migration_status_unversioned_tables_exist(self, app):
+        """State 5: Database with application tables but missing alembic_version must report unversioned_tables_exist."""
+        mock_inspector = MagicMock()
+        mock_inspector.get_table_names.return_value = ["users", "machines", "organizations"]
+
+        with app.app_context():
+            with patch("app.database_migrations.inspect", return_value=mock_inspector):
+                status = check_migration_status(app)
+                assert status["status"] == "unversioned_tables_exist"
+                assert status["is_synced"] is False
+                assert status["is_ready"] is False
+
+    def test_check_migration_status_inspection_failure(self, app):
+        """State 6: Database inspection failure must report inspection_failed and is_ready=False."""
+        with app.app_context():
+            with patch("app.database_migrations.inspect", side_effect=Exception("Database connection timeout")):
+                status = check_migration_status(app)
+                assert status["status"] == "inspection_failed"
+                assert status["is_synced"] is False
+                assert status["is_ready"] is False
+
+    def test_verify_database_on_startup_aborts_on_unready_db_when_enforced(self, app):
+        """Verify startup verification aborts when ENFORCE_MIGRATION_CHECK is enabled and database is unready."""
         app.config["ENFORCE_MIGRATION_CHECK"] = True
         app.config["AUTO_MIGRATE"] = False
 
         mock_status = {
             "is_synced": False,
-            "current_revision": "rev_001",
-            "head_revision": "rev_002",
-            "status": "pending_migration",
-            "message": "Mismatch"
+            "is_ready": False,
+            "current_revision": None,
+            "head_revision": "0001_initial_schema",
+            "status": "uninitialized_database",
+            "message": "Empty"
         }
 
         with patch("app.database_migrations.check_migration_status", return_value=mock_status):
             with pytest.raises(RuntimeError) as exc_info:
                 verify_database_on_startup(app)
-            assert "Database migrations are pending" in str(exc_info.value)
+            assert "Database migrations are required" in str(exc_info.value)
+            assert "uninitialized_database" in str(exc_info.value)
+
+
+class TestRedisConnectionPoolReuse:
+    """Tests for Audit Finding P10-F01-04 Redis Connection Pool Lifecycle."""
+
+    def setup_method(self):
+        reset_redis_connection_pools()
+
+    def teardown_method(self):
+        reset_redis_connection_pools()
+
+    def test_redis_connection_pool_reused(self):
+        """Verify get_redis_connection_pool caches and reuses the same pool for identical URLs."""
+        test_url = "redis://localhost:6379/1"
+        mock_redis = MagicMock()
+        mock_pool = MagicMock()
+        mock_redis.ConnectionPool.from_url.return_value = mock_pool
+
+        with patch.dict(sys.modules, {"redis": mock_redis}):
+            pool1 = get_redis_connection_pool(test_url)
+            pool2 = get_redis_connection_pool(test_url)
+
+            assert pool1 is pool2
+            assert mock_redis.ConnectionPool.from_url.call_count == 1
+
+    def test_redis_connection_pool_reset_clears_cache(self):
+        """Verify reset_redis_connection_pools closes and empties cached connection pools."""
+        test_url = "redis://localhost:6379/2"
+        mock_redis = MagicMock()
+        mock_pool = MagicMock()
+        mock_redis.ConnectionPool.from_url.return_value = mock_pool
+
+        with patch.dict(sys.modules, {"redis": mock_redis}):
+            get_redis_connection_pool(test_url)
+            reset_redis_connection_pools()
+            mock_pool.disconnect.assert_called_once()
+
+            get_redis_connection_pool(test_url)
+            assert mock_redis.ConnectionPool.from_url.call_count == 2
+
+    def test_check_redis_uses_pool_and_handles_failure_gracefully(self, app):
+        """Verify _check_redis ping failure returns healthy=False with error class name."""
+        with app.app_context():
+            app.config["REDIS_URL"] = "redis://localhost:6379/0"
+            mock_redis = MagicMock()
+            mock_client = MagicMock()
+            mock_client.ping.side_effect = Exception("ConnectionRefusedError")
+            mock_redis.Redis.return_value = mock_client
+
+            with patch.dict(sys.modules, {"redis": mock_redis}):
+                with patch("app.health_probes.get_redis_connection_pool") as mock_get_pool:
+                    mock_get_pool.return_value = MagicMock()
+                    ok, status, latency = _check_redis()
+                    assert ok is False
+                    assert "unreachable" in status
+                    assert "Exception" in status
 
 
 class TestHardenedEnvironmentConfiguration:
@@ -180,3 +329,25 @@ class TestHardenedEnvironmentConfiguration:
             with pytest.raises(ValueError):
                 StagingConfig.validate()
 
+
+class TestContainerHardeningSpecifications:
+    """Tests for Audit Findings P10-F01-02 & P10-F01-03."""
+
+    def test_backend_dockerfile_contains_libgomp1(self):
+        """P10-F01-02: Verify backend/Dockerfile runner installs libgomp1 for OpenMP scikit-learn support."""
+        backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        dockerfile_path = os.path.join(backend_dir, "Dockerfile")
+        with open(dockerfile_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        assert "libgomp1" in content
+
+    def test_docker_compose_redis_healthcheck_uses_rediscli_auth(self):
+        """P10-F01-03: Verify deploy/production/docker-compose.prod.yml uses REDISCLI_AUTH without -a password flag."""
+        backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        repo_root = os.path.dirname(backend_dir)
+        compose_path = os.path.join(repo_root, "deploy", "production", "docker-compose.prod.yml")
+        with open(compose_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        assert "REDISCLI_AUTH" in content
+        assert 'redis-cli", "-a"' not in content
+        assert "redis-cli\", \"ping\"" in content

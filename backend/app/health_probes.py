@@ -5,14 +5,14 @@ Provides unversioned, low-overhead HTTP probe endpoints for container orchestrat
 and infrastructure operations consoles.
 
 Endpoints:
-- /health/live   : Liveness probe (process responsiveness)
-- /health/ready  : Readiness probe (database and cache dependency health)
+- /health/live   : Liveness probe (process responsiveness, zero external I/O)
+- /health/ready  : Readiness probe (database connectivity, schema readiness, Redis pool health)
 - /health/system : Operational component diagnostics (safe, credential-masked)
 """
 import os
 import time
 from datetime import datetime, timezone
-from typing import Dict, Any, Tuple
+from typing import Dict, Any, Tuple, Optional
 from flask import Blueprint, jsonify, current_app
 from sqlalchemy import text
 from app.extensions import db
@@ -20,14 +20,52 @@ from app.extensions import db
 health_probes_bp = Blueprint("health_probes", __name__)
 
 _PROCESS_START_TIME = datetime.now(timezone.utc)
+_REDIS_POOLS: Dict[str, Any] = {}
+
+
+def get_redis_connection_pool(redis_url: str):
+    """
+    Retrieve or initialize a thread-safe connection pool for the given Redis URL.
+    Reuses existing pool across probe invocations to prevent socket churn.
+    """
+    import redis
+    if redis_url not in _REDIS_POOLS:
+        _REDIS_POOLS[redis_url] = redis.ConnectionPool.from_url(
+            redis_url,
+            max_connections=5,
+            socket_timeout=1.5,
+            socket_connect_timeout=1.5
+        )
+    return _REDIS_POOLS[redis_url]
+
+
+def reset_redis_connection_pools():
+    """Close and clear all cached Redis connection pools (used during shutdown / testing)."""
+    global _REDIS_POOLS
+    for pool in _REDIS_POOLS.values():
+        try:
+            pool.disconnect()
+        except Exception:
+            pass
+    _REDIS_POOLS.clear()
 
 
 def _check_database() -> Tuple[bool, str, float]:
-    """Check database connectivity and query response latency."""
+    """Check database connectivity, query response latency, and schema readiness."""
     start = time.perf_counter()
     try:
         db.session.execute(text("SELECT 1"))
         latency_ms = round((time.perf_counter() - start) * 1000, 2)
+
+        # In production/staging or when migration check is enforced, verify schema status
+        env_name = current_app.config.get("ENV", "development")
+        enforce_migration = current_app.config.get("ENFORCE_MIGRATION_CHECK", False)
+        if env_name in ("production", "staging") or enforce_migration:
+            from app.database_migrations import check_migration_status
+            status_info = check_migration_status()
+            if not status_info.get("is_ready", False):
+                return False, f"schema_{status_info['status']}", latency_ms
+
         return True, "connected", latency_ms
     except Exception as exc:
         latency_ms = round((time.perf_counter() - start) * 1000, 2)
@@ -35,7 +73,7 @@ def _check_database() -> Tuple[bool, str, float]:
 
 
 def _check_redis() -> Tuple[bool, str, float]:
-    """Check Redis connectivity if configured."""
+    """Check Redis connectivity using cached connection pool if configured."""
     redis_url = current_app.config.get("REDIS_URL") or os.getenv("REDIS_URL")
     if not redis_url:
         return True, "not_configured", 0.0
@@ -43,7 +81,8 @@ def _check_redis() -> Tuple[bool, str, float]:
     start = time.perf_counter()
     try:
         import redis
-        client = redis.Redis.from_url(redis_url, socket_timeout=1.5, socket_connect_timeout=1.5)
+        pool = get_redis_connection_pool(redis_url)
+        client = redis.Redis(connection_pool=pool)
         client.ping()
         latency_ms = round((time.perf_counter() - start) * 1000, 2)
         return True, "connected", latency_ms
@@ -71,7 +110,7 @@ def liveness_probe():
 def readiness_probe():
     """
     Kubernetes Readiness Probe / Load Balancer Target Health.
-    Confirms that critical runtime dependencies (Database, Redis) are online
+    Confirms that critical runtime dependencies (Database, Redis, Schema) are online
     and capable of serving client transactions.
     Returns HTTP 200 if ready, or HTTP 503 if any mandatory dependency is degraded.
     """
@@ -155,4 +194,3 @@ def system_operational_probe():
             "audit_trail_21cfr11": True
         }
     }), 200 if (db_ok and redis_ok) else 503
-

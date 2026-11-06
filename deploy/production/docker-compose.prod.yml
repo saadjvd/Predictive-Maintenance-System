@@ -55,6 +55,8 @@ services:
     container_name: pharmapredict-prod-redis
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:?Error: REDIS_PASSWORD required}"]
+    environment:
+      - REDISCLI_AUTH=${REDIS_PASSWORD:?Error: REDIS_PASSWORD required}
     networks:
       - pharmapredict-prod-net
     ports:
@@ -62,7 +64,7 @@ services:
     volumes:
       - redis_prod_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 3s
       retries: 5
