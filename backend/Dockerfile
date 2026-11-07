@@ -29,12 +29,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Create secure non-root system user and group
+# Create secure non-root system user, group, and home directory
 RUN groupadd --system --gid 10001 appgroup && \
-    useradd --system --uid 10001 --gid appgroup --no-create-home appuser
+    useradd --system --uid 10001 --gid appgroup --create-home appuser
 
 # Copy installed Python packages from builder to non-root user directory
-COPY --from=builder /root/.local /home/appuser/.local
+COPY --from=builder --chown=appuser:appgroup /root/.local /home/appuser/.local
 ENV PATH=/home/appuser/.local/bin:$PATH
 ENV PYTHONPATH=/app
 
@@ -50,9 +50,9 @@ USER appuser
 
 EXPOSE 5000
 
-# Canonical container health probe
+# Canonical container health probe (evaluates dynamic PORT or defaults to 5000)
 HEALTHCHECK --interval=20s --timeout=5s --start-period=10s --retries=3 \
-  CMD curl -f http://localhost:5000/health/live || exit 1
+  CMD curl -f http://localhost:${PORT:-5000}/health/live || exit 1
 
-# Production Gunicorn WSGI server entrypoint
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "4", "--threads", "2", "--timeout", "120", "--access-logfile", "-", "--error-logfile", "-", "run:app"]
+# Production Gunicorn WSGI server entrypoint with dynamic port and single-worker safety
+CMD ["sh", "-c", "gunicorn --bind 0.0.0.0:${PORT:-5000} --workers ${GUNICORN_WORKERS:-1} --threads ${GUNICORN_THREADS:-4} --timeout 120 --access-logfile - --error-logfile - run:app"]

@@ -43,6 +43,8 @@ class Config:
     # Database migration controls
     AUTO_MIGRATE = os.getenv("AUTO_MIGRATE", "false").lower() in ("true", "1", "yes")
     ENFORCE_MIGRATION_CHECK = os.getenv("ENFORCE_MIGRATION_CHECK", "false").lower() in ("true", "1", "yes")
+    SKIP_STARTUP_MIGRATION_CHECK = os.getenv("SKIP_STARTUP_MIGRATION_CHECK", "false").lower() in ("true", "1", "yes")
+    SKIP_DB_CREATE_ALL = os.getenv("SKIP_DB_CREATE_ALL", "false").lower() in ("true", "1", "yes")
 
     # CORS
     CORS_ORIGINS = [
