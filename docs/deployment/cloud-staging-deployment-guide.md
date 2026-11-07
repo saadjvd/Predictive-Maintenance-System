@@ -36,7 +36,7 @@
 │                                      │  │ (or Redis Cloud)  │
 │ - Managed PostgreSQL 16              │  │                   │
 │ - timescaledb extension pre-loaded   │  │ - Optional cache  │
-│ - signal_readings hypertable         │  │ - Thread-safe pool│
+│ - signal_readings standard table     │  │ - Thread-safe pool│
 └──────────────────────────────────────┘  └───────────────────┘
                         ▲
                         │ Outbound HTTPS / TLS 1.3 Push
@@ -165,16 +165,26 @@ python -c "from app import create_app; from flask_migrate import downgrade; app 
 
 ---
 
-## 7. Cost Estimates (Informational Only)
+## 7. Staging Architecture Cost Matrix (Strictly $0.00 / Zero Cost)
 
-> [!NOTE]
-> All figures below are third-party vendor estimates for a small staging cluster as of late 2026. No paid resources or billing commitments are made by this repository.
+> [!IMPORTANT]
+> **Strict Zero-Cost Deployment:** The PharmaPredict AI cloud staging environment operates entirely on genuinely free tiers. No credit card, paid trial, or automatic paid upgrade is permitted.
 
-| Provider | Service Tier | Estimated Cost | Notes |
+| Provider | Service Tier | Actual Staging Cost | Notes |
 |:---|:---|:---|:---|
-| **Vercel** | Hobby (Free) / Pro ($20/seat/mo) | **$0.00 / month** | Hobby tier supports standard Next.js staging workloads. |
-| **Render** | Web Service (Starter) | **$7.00 / month** | 512 MB RAM, 0.5 vCPU, custom Dockerfile, persistent uptime. |
-| **Tiger Cloud** | Dev/Test Tier (Timescale) | **~$15.00 – $25.00 / month** | Managed TimescaleDB compute + storage. |
-| **Redis** | Render Key Value / Upstash Free | **$0.00 – $7.00 / month** | Redis is optional; $0 if omitted or using Upstash free tier. |
-| **Total Estimated Staging Cost** | | **~$22.00 – $32.00 / month** | Dependent on active usage and free-tier eligibility. |
+| **Vercel** | Hobby (Free Plan) | **$0.00 / month** | Free Next.js 16 deployment with static & client-side rendering. |
+| **Render** | Web Service (Free Plan) | **$0.00 / month** | 512 MB RAM, shared CPU, custom Dockerfile, 750 free instance hours/month. |
+| **Tiger Cloud** | Permanent Free Tier | **$0.00 / month** | 750 MiB storage, AWS `us-east-1`, PostgreSQL 16 + TimescaleDB extension. |
+| **Redis** | Unset / Upstash Free | **$0.00 / month** | Optional; zero cost when omitted (`/health/ready` returns HTTP 200). |
+| **Total Staging Cost** | **Zero-Cost Architecture** | **$0.00 / month** | 100% free tier. No credit card or billing commitment required. |
+
+---
+
+## 8. Database Architecture Status & Technical Limitation Notice
+
+- **Approved Staging Decision:** **Option A (Standard Indexed PostgreSQL Table)**.
+- **TimescaleDB Extension Status:** `INSTALLED` and available on Tiger Cloud PostgreSQL 16.
+- **`signal_readings` Status:** Operating as a standard, indexed PostgreSQL table (with 8 B-tree composite indexes).
+- **Explicit Technical Notice:** Native TimescaleDB hypertable chunk partitioning and columnar compression are **inactive** in staging. Hypertable conversion was bypassed because `signal_readings` uses `PRIMARY KEY (id)` and `UNIQUE (event_id)`, whereas TimescaleDB requires the partitioning column (`source_timestamp`) in all unique constraints.
+- **Future Production Parity Plan:** See detailed specification in [`technical-limitation-timescaledb-hypertable.md`](technical-limitation-timescaledb-hypertable.md) (Task `P10-DB-002`) for composite key migration in a future Phase 10 release.
 
