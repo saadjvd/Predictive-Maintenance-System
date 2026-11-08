@@ -41,6 +41,11 @@ def mask_database_url(url: str) -> str:
 
 def run_deployment_migrations() -> int:
     """Execute pre-deployment database migration and return exit code (0 = OK, 1 = Error)."""
+    # Prefer unpooled direct connection for migrations when available (e.g. Neon PostgreSQL)
+    unpooled_url = os.getenv("DATABASE_URL_UNPOOLED")
+    if unpooled_url:
+        os.environ["DATABASE_URL"] = unpooled_url
+
     # Force migration bypass flags during migration runner initialization
     os.environ["SKIP_STARTUP_MIGRATION_CHECK"] = "true"
     os.environ["SKIP_DB_CREATE_ALL"] = "true"

@@ -2,14 +2,19 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
-# Load .env file from project root or backend folder
+# Load .env.local first, followed by .env (standard 12-factor / Next.js convention)
+# Existing OS/container/platform environment variables always take precedence (override=False)
 backend_dir = Path(__file__).resolve().parent.parent
 project_root = backend_dir.parent
-env_file = project_root / ".env"
-if env_file.exists():
-    load_dotenv(env_file)
-else:
-    load_dotenv(backend_dir / ".env")
+
+for env_candidate in [
+    project_root / ".env.local",
+    backend_dir / ".env.local",
+    project_root / ".env",
+    backend_dir / ".env",
+]:
+    if env_candidate.exists():
+        load_dotenv(env_candidate, override=False)
 
 DEFAULT_DEV_SECRET = "dev-pharma-predict-secret-key-change-in-prod-2026"
 

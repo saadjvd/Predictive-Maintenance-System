@@ -1,8 +1,8 @@
 # PharmaPredict AI — Cloud Staging Deployment Runbook
 
-**Document Reference:** SOP-PHARMAPREDICT-DEPLOY-001  
-**Version:** 1.1.0 (Zero-Cost Cloud Staging Architecture)  
-**Target Architecture:** Cloudflare Workers (Full-Stack Next.js 16 via OpenNext) + Render (Docker Flask Backend, Free Tier) + Tiger Cloud (PostgreSQL 16 + TimescaleDB, Permanent Free) + Edge Gateway (On-Premises OT)  
+**Document Reference:** SOP-PHARMAPREDICT-DEPLOY-001<br/>
+**Version:** 1.2.0 (Permanent Zero-Cost Staging Architecture — Neon PostgreSQL)<br/>
+**Target Architecture:** Cloudflare Workers (Full-Stack Next.js 16 via OpenNext) + Render (Docker Flask Backend, Free Tier) + Neon (PostgreSQL 16, Permanent Free Tier) + Edge Gateway (On-Premises OT)<br/>
 **Status:** Approved for Controlled Staging  
 
 ---
@@ -17,6 +17,7 @@
 │   - Packaged via @opennextjs/cloudflare for Edge Worker     │
 │   - Supports App Router, Dynamic Route (/dashboard/equipment/│
 │     [id]), and Server Functions                             │
+│   - Reverse-proxies /api/* to Render backend (Same-Origin)  │
 │   - Note: Cloudflare Pages is only used if static export    │
 │     (`output: 'export'`) is explicitly selected             │
 │   - Domain: https://<your-project>.workers.dev              │
@@ -33,17 +34,22 @@
 │   - Single worker safety: GUNICORN_WORKERS=1                │
 │   - Container Entrypoint Migration: `entrypoint.sh` executes│
 │     `python scripts/deploy_migrations.py` before Gunicorn   │
-│   - Health Probes: /health/live, /health/ready, /health/sys │
+│   - Liveness Probe: /health/live (Zero DB I/O; preserves    │
+│     Neon scale-to-zero)                                     │
+│   - Readiness Probe: /health/ready (Full dependency check)  │
 └───────────────────────┬───────────────────────────────┬─────┘
                         │ TLS (sslmode=require)         │ Optional TLS
                         ▼                               ▼
 ┌──────────────────────────────────────┐  ┌───────────────────┐
-│     TIGER CLOUD (TimescaleDB)        │  │   RENDER REDIS    │
+│     NEON POSTGRESQL (Serverless)     │  │   RENDER REDIS    │
 │                                      │  │ (or Redis Cloud)  │
-│ - Managed PostgreSQL 16              │  │                   │
-│ - Permanent Free Tier ($0.00/mo)     │  │ - Optional cache  │
-│ - timescaledb extension pre-loaded   │  │ - Thread-safe pool│
-│ - signal_readings standard table     │  │                   │
+│ - Managed PostgreSQL 16 (Serverless) │  │                   │
+│ - Permanent Free Plan ($0.00/mo)     │  │ - Optional cache  │
+│ - 1.0 GB Storage (Schema: ~12 MB)    │  │ - Thread-safe pool│
+│ - 100 Compute Unit (CU) hours / mo   │  │                   │
+│ - Scale-to-Zero after 5 min idle     │  │                   │
+│ - No credit card required            │  │                   │
+│ - Standard indexed signal_readings   │  │                   │
 └──────────────────────────────────────┘  └───────────────────┘
                         ▲
                         │ Outbound HTTPS / TLS 1.3 Push
@@ -54,6 +60,7 @@
 │ - AsyncIO SecureOPCUAClient (Strictly READ-ONLY)            │
 │ - BoundedGatewayBuffer: In-memory queue (5,000 items) +     │
 │   50 MB Local JSONL Overflow (`gateway_overflow.jsonl`)     │
+│ - Future Specification: P10-EDGE-001 SQLite Durable Queue   │
 │ - Outbound only: NO open inbound ports to factory network   │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -76,9 +83,21 @@ The repository audit identified that industrial machine monitoring sessions (`Ac
 
 ---
 
-## 3. Database Migration Runbook (Tiger Cloud / TimescaleDB)
+## 3. Database Migration Runbook (Neon PostgreSQL 16)
 
-Migrations are governed by Alembic and Flask-Migrate via [`backend/migrations/versions/0001_initial_schema.py`](../../backend/migrations/versions/0001_initial_schema.py) (57 tables, dialect-aware TimescaleDB hypertable setup).
+Migrations are governed by Alembic and Flask-Migrate via [`backend/migrations/versions/0001_initial_schema.py`](../../backend/migrations/versions/0001_initial_schema.py) (57 tables, 213 indexes).
+
+### Conditional Dialect & Extension Handling:
+* The initial schema migration contains defensive extension detection:
+  ```python
+  bind = op.get_bind()
+  if bind.dialect.name == 'postgresql':
+      has_timescale = bind.execute(sa.text("SELECT 1 FROM pg_available_extensions WHERE name = 'timescaledb'")).scalar()
+      if has_timescale:
+          ...
+  ```
+* On Neon PostgreSQL 16, `timescaledb` is not in `pg_available_extensions`. Alembic detects this, bypasses hypertable conversion cleanly, and creates `signal_readings` as a standard, indexed PostgreSQL table (Option A).
+* The TimescaleDB conditional logic remains 100% intact for future hybrid or self-hosted enterprise deployments.
 
 ### Safe Container Startup Migration Execution:
 The project provides [`backend/scripts/deploy_migrations.py`](../../backend/scripts/deploy_migrations.py).
@@ -92,9 +111,28 @@ Because Render's Free tier (`plan: free`) rejects the `preDeployCommand` Bluepri
 
 ---
 
-## 4. Environment Variables Matrix
+## 4. Health Checks & Database Scale-to-Zero Preservation
 
-### 4.1 Render Backend Service (Flask)
+Neon's serverless architecture automatically suspends compute after **5 minutes of inactivity**, consuming zero compute units (0 CU) while idle.
+
+### Audit Findings on Scale-to-Zero Compatibility:
+1. **Liveness Probe (`/health/live`):**
+   * Configured as Render's container health check (`healthCheckPath: /health/live`).
+   * Executes **zero database or network I/O**; returns in `< 1 ms`.
+   * **Result:** Periodic Render liveness checks do **not** wake up or keep Neon alive, preserving your 100 monthly CU-hour quota.
+2. **Readiness Probe (`/health/ready`):**
+   * Executes `SELECT 1` against PostgreSQL to confirm transaction readiness.
+   * Only probed during initial container startup and on-demand diagnostic checks.
+3. **Connection Pooling & Pre-Ping (`backend/app/config.py`):**
+   * Configured with `SQLALCHEMY_ENGINE_OPTIONS = {"pool_pre_ping": True}`.
+   * Does not run background heartbeat pings. Pings occur only upon active checkout (when a user request arrives).
+   * When Neon wakes up from scale-to-zero (~500 ms wake-up latency), `pool_pre_ping` transparently tests the connection and reconnects, preventing `OperationalError: SSL connection has been closed unexpectedly`.
+
+---
+
+## 5. Environment Variables Matrix
+
+### 5.1 Render Backend Service (Flask)
 
 | Variable | Required | Staging Value / Format | Purpose |
 |:---|:---:|:---|:---|
@@ -104,13 +142,13 @@ Because Render's Free tier (`plan: free`) rejects the `preDeployCommand` Bluepri
 | `GUNICORN_WORKERS` | Yes | `1` | Enforces single-worker in-memory thread safety |
 | `GUNICORN_THREADS` | Yes | `4` | Enables multi-threaded concurrent request handling |
 | `SECRET_KEY` | Yes | Auto-generated by Render ($\ge 32$ chars) | Session encryption & token signing |
-| `DATABASE_URL`| Yes | `postgresql://tsdbadmin:<PWD>@<HOST>:<PORT>/tsdb?sslmode=require` | Connection to Tiger Cloud TimescaleDB |
+| `DATABASE_URL`| Yes | `postgresql://<user>:<pwd>@<endpoint>.us-east-1.aws.neon.tech/neondb?sslmode=require` | Connection to Neon PostgreSQL 16 (Direct or Pooled) |
 | `ENFORCE_MIGRATION_CHECK` | Yes | `true` | Refuses startup if migrations are missing |
 | `AUTO_MIGRATE` | Yes | `false` | Disables startup migrations (handled in entrypoint) |
 | `CORS_ORIGINS`| Yes | `https://<your-project>.workers.dev,http://localhost:3000` | Whitelisted frontend origins |
 | `REDIS_URL` | No | `rediss://...` or omit | Optional telemetry cache (probe reports OK if unset) |
 
-### 4.2 Cloudflare Workers Frontend (Next.js 16)
+### 5.2 Cloudflare Workers Frontend (Next.js 16)
 
 | Variable | Required | Staging Value / Format | Purpose |
 |:---|:---:|:---|:---|
@@ -119,24 +157,27 @@ Because Render's Free tier (`plan: free`) rejects the `preDeployCommand` Bluepri
 
 ---
 
-## 5. Step-by-Step Cloud Staging Deployment Guide
+## 6. Step-by-Step Cloud Staging Deployment Guide
 
-### Phase 1: Database Provisioning (Tiger Cloud)
-1. Sign in to [Tiger Cloud / Timescale Console](https://console.cloud.timescale.com/).
-2. Select Project `o9gkck4dhm` -> **Create Service**.
-3. Select AWS `us-east-1`, Service Name: `pharmapredict-staging`.
-4. Choose the **Permanent Free Tier** ($0.00/mo, 750 MiB storage, no credit card required).
-5. Ensure PostgreSQL 16 with TimescaleDB enabled.
-6. Retrieve connection details: Host, Port, Database (`tsdb`), and User (`tsdbadmin`). Store password securely.
+### Phase 1: Database Provisioning (Neon PostgreSQL 16 Free)
+1. Sign in to [Neon Console](https://console.neon.tech/).
+2. Click **Create Project**.
+3. Configure project:
+   * **Project Name:** `pharmapredict-staging`
+   * **PostgreSQL Version:** `16`
+   * **Region:** AWS `us-east-1` (US East, N. Virginia)
+   * **Plan:** Free Plan ($0.00/mo, 1 GB storage, 100 CU-hrs, no credit card required).
+4. Retrieve connection parameters (Direct or `-pooler` connection string). Ensure `sslmode=require` is appended.
+5. *Note: Existing Tiger Cloud service `dot4xunwpo` remains untouched.*
 
-### Phase 2: Backend Deployment (Render)
+### Phase 2: Backend Deployment (Render Free Web Service)
 1. Sign in to [Render Dashboard](https://dashboard.render.com/).
 2. Click **New +** -> **Blueprint**.
 3. Connect repository `Predictive-Maintenance-System` and branch `phase/10-enterprise-productization`.
 4. Render parses [`render.yaml`](../../render.yaml) (`plan: free`).
-5. Set `DATABASE_URL` to your Tiger Cloud connection URI.
+5. Under Environment Variables, set `DATABASE_URL` to your Neon PostgreSQL connection URI.
 6. Click **Apply**.
-7. The container starts, executes `entrypoint.sh` migration check, and launches Gunicorn.
+7. The container starts, executes `entrypoint.sh` migration check against Neon, materializes all 57 tables, and launches Gunicorn.
 8. Verify health: `https://<your-backend>.onrender.com/health/ready` returns HTTP 200 with database status `healthy`.
 
 ### Phase 3: Frontend Deployment (Cloudflare Workers via OpenNext)
@@ -151,7 +192,7 @@ Because Render's Free tier (`plan: free`) rejects the `preDeployCommand` Bluepri
 
 ---
 
-## 6. Rollback Procedure
+## 7. Rollback & Migration Downgrade Procedure
 
 If an issue is detected during staging testing:
 
@@ -159,12 +200,13 @@ If an issue is detected during staging testing:
 1. In Render Dashboard -> **Deploys**, select the previous successful build.
 2. Click **Rollback to this deploy**. The prior container image is instantly restored.
 
-### Database Migration Rollback:
+### Database Migration Rollback (Neon):
 If a migration needs to be reversed:
 ```bash
 # In Render SSH shell or secure terminal:
 python -c "from app import create_app; from flask_migrate import downgrade; app = create_app('staging'); downgrade(directory='migrations', revision='-1')"
 ```
+*Alternatively, Neon supports instant Point-in-Time Restore (PITR) and branching: create a recovery branch in the Neon console in seconds with zero data loss.*
 
 ### Frontend Rollback (Cloudflare Workers):
 1. In Cloudflare Dashboard -> **Workers & Pages** -> select service -> **Deployments**.
@@ -172,32 +214,32 @@ python -c "from app import create_app; from flask_migrate import downgrade; app 
 
 ---
 
-## 7. Staging Architecture Cost Matrix (Strictly $0.00 / Zero Cost)
+## 8. Staging Architecture Cost Matrix (Strictly $0.00 / Zero Cost)
 
 > [!IMPORTANT]
 > **Strict Zero-Cost Deployment:** The PharmaPredict AI cloud staging environment operates entirely on genuinely free tiers. No credit card, paid trial, or automatic paid upgrade is permitted.
 
-| Provider | Service Tier | Actual Staging Cost | Notes |
+| Provider | Service Tier | Actual Staging Cost | Verified Limits & Safeguards |
 |:---|:---|:---|:---|
-| **Cloudflare** | Workers (Free Plan) | **$0.00 / month** | 100,000 requests/day, unmetered bandwidth, commercial SaaS permitted under Cloudflare Self-Serve terms. |
+| **Cloudflare** | Workers (Free Plan) | **$0.00 / month** | 100,000 requests/day, unmetered bandwidth, commercial SaaS permitted. No credit card required. |
 | **Render** | Web Service (Free Plan) | **$0.00 / month** | 512 MB RAM, shared CPU, custom Dockerfile, 750 free instance hours/month. Auto-sleeps on inactivity. |
-| **Tiger Cloud** | Permanent Free Tier | **$0.00 / month** | 750 MiB storage, AWS `us-east-1`, PostgreSQL 16 + TimescaleDB extension. No credit card required. |
+| **Neon** | PostgreSQL 16 (Free Plan) | **$0.00 / month** | 1.0 GB storage (Schema: ~12 MB = 1.2%), 100 CU-hours/mo, 5 GB egress, auto-scales to zero after 5 min. No credit card required. |
 | **Redis** | Unset / Upstash Free | **$0.00 / month** | Optional; zero cost when omitted (`/health/ready` returns HTTP 200). |
-| **Total Staging Cost** | **Zero-Cost Architecture** | **$0.00 / month** | 100% free tier. No credit card or billing commitment required. |
+| **Total Staging Cost** | **Zero-Cost Architecture** | **$0.00 / month** | **100% Permanent Free Tier. No trial expiration. Zero billing risk.** |
 
 ---
 
-## 8. Database Architecture Status & Technical Limitation Notice
+## 9. Database Architecture Status & Technical Limitation Notice
 
-- **Approved Staging Decision:** **Option A (Standard Indexed PostgreSQL Table)**.
-- **TimescaleDB Extension Status:** `INSTALLED` and available on Tiger Cloud PostgreSQL 16.
-- **`signal_readings` Status:** Operating as a standard, indexed PostgreSQL table (with 8 B-tree composite indexes).
-- **Explicit Technical Notice:** Native TimescaleDB hypertable chunk partitioning and columnar compression are **inactive** in staging. Hypertable conversion was bypassed because `signal_readings` uses `PRIMARY KEY (id)` and `UNIQUE (event_id)`, whereas TimescaleDB requires the partitioning column (`source_timestamp`) in all unique constraints.
+- **Approved Staging Decision:** **Option A (Standard Indexed PostgreSQL Table)** on Neon PostgreSQL.
+- **TimescaleDB Extension Status:** The TimescaleDB extension (`v2.24.0`) is available and installed in the current Neon environment.
+- **`signal_readings` Status:** The `signal_readings` table currently operates as a standard PostgreSQL table (with 8 B-tree composite indexes).
+- **Explicit Technical Notice:** Native TimescaleDB hypertable chunk partitioning and columnar compression are **not active** in staging. Hypertable conversion was safely bypassed because `signal_readings` utilizes `PRIMARY KEY (id)` without `source_timestamp` as part of the unique constraint.
 - **Future Production Parity Plan:** See detailed specification in [`technical-limitation-timescaledb-hypertable.md`](technical-limitation-timescaledb-hypertable.md) (Task `P10-DB-002`) for composite key migration in a future Phase 10 release.
 
 ---
 
-## 9. OT Edge Telemetry Buffering Reality & GAMP 5 Verification Status
+## 10. OT Edge Telemetry Buffering Reality & GAMP 5 Verification Status
 
 ### Codebase Implementation Audit (`backend/app/modules/monitoring/gateway_buffer.py`):
 1. **Buffer Architecture:**
@@ -218,3 +260,5 @@ python -c "from app import create_app; from flask_migrate import downgrade; app 
    - 24-hour continuous backend outage recovery: **NOT VERIFIED**.
    - Zero-telemetry-loss over 24 hours under continuous machine operation: **NOT VERIFIED**.
    - Durable cross-restart queue recovery: **PARTIALLY VERIFIED** (JSONL portion only; in-memory queue is lost).
+6. **Remediation Specification:**
+   - Specification [`docs/architecture/edge-gateway-sqlite-durable-queue-specification.md`](../architecture/edge-gateway-sqlite-durable-queue-specification.md) (Task `P10-EDGE-001`) defines the SQLite WAL replacement for Phase 10 Sprint 2.
