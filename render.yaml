@@ -1,0 +1,37 @@
+# ==============================================================================
+# PharmaPredict AI — Render Cloud Blueprint Specification (Zero-Cost Staging)
+# Staging Deployment: Docker-based Flask Web Service on Render Free Plan ($0/mo)
+# ==============================================================================
+services:
+  - type: web
+    name: pharmapredict-backend-staging
+    runtime: docker
+    dockerfilePath: backend/Dockerfile
+    dockerContext: backend
+    plan: free
+    region: oregon
+    healthCheckPath: /health/live
+    autoDeploy: false
+    envVars:
+      - key: FLASK_ENV
+        value: staging
+      - key: APP_NAME
+        value: "PharmaPredict AI"
+      - key: APP_VERSION
+        value: "1.0.0"
+      - key: GUNICORN_WORKERS
+        value: "1"
+      - key: GUNICORN_THREADS
+        value: "4"
+      - key: ENFORCE_MIGRATION_CHECK
+        value: "true"
+      - key: AUTO_MIGRATE
+        value: "false"
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DATABASE_URL
+        sync: false
+      - key: CORS_ORIGINS
+        value: "http://localhost:3000,https://pharmapredict-ai.vercel.app"
+      - key: REDIS_URL
+        sync: false

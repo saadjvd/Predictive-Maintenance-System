@@ -2,14 +2,21 @@ name: PharmaPredict AI — Continuous Quality Gates & Validation CI
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [ main, develop, 'phase/**', 'feature/**' ]
   pull_request:
-    branches: [ main, develop ]
+    branches: [ main, develop, 'phase/**', 'feature/**' ]
+
+permissions:
+  contents: read
 
 jobs:
+  # ----------------------------------------------------------------------------
+  # 1. Frontend Quality Gate: Lint, TypeScript & Next.js Production Build
+  # ----------------------------------------------------------------------------
   frontend-quality-gate:
-    name: Frontend Lint & TypeScript Verification
+    name: Frontend TypeScript & Production Build Verification
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -26,12 +33,21 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: TypeScript type-check
+      - name: TypeScript static type-check
         run: pnpm exec tsc --noEmit
 
+      - name: Next.js standalone production build
+        run: pnpm run build
+        env:
+          NEXT_OUTPUT_STANDALONE: "true"
+
+  # ----------------------------------------------------------------------------
+  # 2. Backend Regression Quality Gate: Full 182-Test Battery (Phases 1-10)
+  # ----------------------------------------------------------------------------
   backend-quality-gate:
     name: Backend Test Battery & GAMP 5 Verification
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     services:
       postgres:
         image: timescale/timescaledb-ha:pg16
@@ -61,9 +77,9 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r backend/requirements.txt
-          pip install pytest pytest-asyncio
+          pip install pytest pytest-asyncio pyyaml
 
-      - name: Execute Full GAMP 5 Automated Test Battery (Phases 1-8)
+      - name: Execute Full Automated Test Battery (182 Tests)
         env:
           PYTHONPATH: backend
           FLASK_ENV: testing
@@ -72,9 +88,201 @@ jobs:
         run: |
           pytest backend/tests/ -v --durations=10
 
+  # ----------------------------------------------------------------------------
+  # 3. PostgreSQL Live Integration Gate: Migrations, Tables & Health Probes
+  # ----------------------------------------------------------------------------
+  postgres-infrastructure-gate:
+    name: PostgreSQL 16 Baseline Migration & Probe Integration Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres16:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: pguser_ci
+          POSTGRES_PASSWORD: ci_test_password_secure_99
+          POSTGRES_DB: pharmapredict_pg_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt
+
+      - name: Run PostgreSQL Infrastructure Integration Verification
+        env:
+          PYTHONPATH: backend
+          DATABASE_URL: postgresql://pguser_ci:ci_test_password_secure_99@localhost:5432/pharmapredict_pg_ci
+          SECRET_KEY: test-secret-key-for-postgres-ci-32-chars-min
+        run: |
+          python backend/scripts/verify_database_infrastructure.py
+
+  # ----------------------------------------------------------------------------
+  # 4. TimescaleDB Live Integration Gate: Extensions, Hypertables & Health Probes
+  # ----------------------------------------------------------------------------
+  timescaledb-infrastructure-gate:
+    name: TimescaleDB PG16 Extension & Hypertable Integration Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      timescaledb:
+        image: timescale/timescaledb-ha:pg16
+        env:
+          POSTGRES_USER: tsuser_ci
+          POSTGRES_PASSWORD: ci_test_password_timescale_99
+          POSTGRES_DB: pharmapredict_ts_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt
+
+      - name: Run TimescaleDB Infrastructure Integration Verification
+        env:
+          PYTHONPATH: backend
+          DATABASE_URL: postgresql://tsuser_ci:ci_test_password_timescale_99@localhost:5432/pharmapredict_ts_ci
+          SECRET_KEY: test-secret-key-for-timescale-ci-32-chars-min
+        run: |
+          python backend/scripts/verify_database_infrastructure.py
+
+  # ----------------------------------------------------------------------------
+  # 5. Linux Docker Build & Container Hardening Gate
+  # ----------------------------------------------------------------------------
+  linux-docker-build-gate:
+    name: Linux Backend Docker Build, libgomp1 & Non-Root Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build Backend Production Docker Image
+        run: |
+          echo "Building backend production container..."
+          docker build -t pharmapredict-backend:test -f backend/Dockerfile backend
+
+      - name: Verify libgomp.so.1 presence in runner image
+        run: |
+          echo "Verifying libgomp.so.1..."
+          docker run --rm pharmapredict-backend:test find /usr -name "libgomp.so*"
+          docker run --rm pharmapredict-backend:test python -c "import ctypes; ctypes.cdll.LoadLibrary('libgomp.so.1'); print('libgomp.so.1 dynamically loaded successfully')"
+
+      - name: Verify Scientific Python Libraries Import
+        run: |
+          echo "Verifying scientific libraries..."
+          docker run --rm pharmapredict-backend:test python -c "
+          import numpy as np
+          import scipy
+          import pandas as pd
+          import sklearn
+          print(f'NumPy: {np.__version__}, SciPy: {scipy.__version__}, Pandas: {pd.__version__}, Scikit-Learn: {sklearn.__version__}')
+          "
+
+      - name: Execute Parallel Scikit-Learn Workload (n_jobs > 1)
+        run: |
+          echo "Testing parallel scikit-learn workload..."
+          docker run --rm pharmapredict-backend:test python -c "
+          from sklearn.ensemble import IsolationForest
+          import numpy as np
+          X = np.random.RandomState(42).randn(1000, 5)
+          clf = IsolationForest(n_jobs=2, random_state=42)
+          clf.fit(X)
+          preds = clf.predict(X[:10])
+          print('Parallel IsolationForest fit successfully with n_jobs=2. Sample predictions:', preds)
+          "
+
+      - name: Verify Non-Root User Permissions
+        run: |
+          echo "Verifying container user..."
+          USER_ID=$(docker run --rm pharmapredict-backend:test id -u)
+          GROUP_ID=$(docker run --rm pharmapredict-backend:test id -g)
+          echo "Container User ID: $USER_ID, Group ID: $GROUP_ID"
+          test "$USER_ID" = "10001" || (echo "FAILED: User is not 10001" && exit 1)
+          test "$GROUP_ID" = "10001" || (echo "FAILED: Group is not 10001" && exit 1)
+
+      - name: Verify Container Process Startup & Healthcheck Behavior
+        run: |
+          echo "Starting container in background..."
+          CONTAINER_ID=$(docker run -d \
+            -p 5000:5000 \
+            -e SECRET_KEY="ci-container-test-secret-key-minimum-32-chars" \
+            -e FLASK_ENV="testing" \
+            pharmapredict-backend:test)
+          
+          echo "Container started with ID: $CONTAINER_ID"
+          sleep 5
+
+          echo "Querying liveness probe via curl..."
+          curl -f http://localhost:5000/health/live || (docker logs $CONTAINER_ID && exit 1)
+          
+          docker stop $CONTAINER_ID
+          docker rm $CONTAINER_ID
+          echo "Container healthcheck behavior verified successfully."
+
+  # ----------------------------------------------------------------------------
+  # 6. Production Docker Compose Specification Gate
+  # ----------------------------------------------------------------------------
+  docker-compose-validation-gate:
+    name: Production Docker Compose Specification & Topology Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate Production Compose Configuration
+        env:
+          POSTGRES_USER: pharmapredict_prod_test
+          POSTGRES_PASSWORD: test_secure_postgres_pass_123
+          POSTGRES_DB: pharmapredict_prod_db
+          REDIS_PASSWORD: test_secure_redis_pass_123
+          SECRET_KEY: ci_test_secret_key_minimum_32_characters_long
+          CORS_ORIGINS: http://localhost:3000
+        run: |
+          echo "Validating deploy/production/docker-compose.prod.yml..."
+          docker compose -f deploy/production/docker-compose.prod.yml config > /dev/null
+          echo "Production Docker Compose configuration parsed and validated with exit code 0."
+
+  # ----------------------------------------------------------------------------
+  # 7. Documentation Integrity Gate
+  # ----------------------------------------------------------------------------
   validation-docs-gate:
     name: GAMP 5 & 21 CFR Part 11 Documentation Integrity Gate
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -91,5 +299,7 @@ jobs:
           test -f docs/pilot/factory-pilot-plan.md || exit 1
           test -f docs/deployment/production-architecture.md || exit 1
           test -f docs/security/security-review.md || exit 1
+          test -f docs/reviews/P10-F01_PR99_TECHNICAL_AUDIT.md || exit 1
           test -f backend/scripts/database_backup_restore.py || exit 1
+          test -f backend/scripts/verify_database_infrastructure.py || exit 1
           echo "All mandatory GAMP 5 validation deliverables are present and verified."
