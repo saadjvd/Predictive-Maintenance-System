@@ -1,6 +1,7 @@
 # ==============================================================================
 # PharmaPredict AI — Flask Backend Multi-Stage Production Dockerfile
 # Hardened non-root debian container with Gunicorn WSGI & health probes.
+# Zero-cost staging compatible (supports Render Free Tier auto-migration).
 # ==============================================================================
 
 # 1. Builder Stage: Compile wheels and dependencies
@@ -41,6 +42,9 @@ ENV PYTHONPATH=/app
 # Copy application source code
 COPY --chown=appuser:appgroup . /app
 
+# Configure executable permissions for container entrypoint
+RUN chmod +x /app/entrypoint.sh
+
 # Set production environment defaults
 ENV FLASK_ENV=production
 ENV PYTHONUNBUFFERED=1
@@ -53,6 +57,8 @@ EXPOSE 5000
 # Canonical container health probe (evaluates dynamic PORT or defaults to 5000)
 HEALTHCHECK --interval=20s --timeout=5s --start-period=10s --retries=3 \
   CMD curl -f http://localhost:${PORT:-5000}/health/live || exit 1
+
+ENTRYPOINT ["/app/entrypoint.sh"]
 
 # Production Gunicorn WSGI server entrypoint with dynamic port and single-worker safety
 CMD ["sh", "-c", "gunicorn --bind 0.0.0.0:${PORT:-5000} --workers ${GUNICORN_WORKERS:-1} --threads ${GUNICORN_THREADS:-4} --timeout 120 --access-logfile - --error-logfile - run:app"]
