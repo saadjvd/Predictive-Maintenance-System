@@ -9,7 +9,7 @@ services:
     dockerfilePath: backend/Dockerfile
     dockerContext: backend
     plan: free
-    region: oregon
+    region: ohio
     healthCheckPath: /health/live
     autoDeploy: false
     envVars:
@@ -31,7 +31,9 @@ services:
         generateValue: true
       - key: DATABASE_URL
         sync: false
+      - key: DATABASE_URL_UNPOOLED
+        sync: false
       - key: CORS_ORIGINS
-        value: "http://localhost:3000,https://pharmapredict-ai.vercel.app"
+        value: "http://localhost:3000"
       - key: REDIS_URL
         sync: false
