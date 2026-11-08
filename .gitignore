@@ -67,3 +67,4 @@ pnpm-debug.log*
 # Nested clone & temporary harness
 Predictive-Maintenance-System/
 Saad_Javed_Claude_Work_Harness/
+.neon
