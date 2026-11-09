@@ -875,6 +875,13 @@ class ApiClient {
       ...((options.headers as Record<string, string>) || {}),
     };
 
+    if (typeof window !== 'undefined') {
+      const storedToken = localStorage.getItem('pharma_session_token');
+      if (storedToken && !headers['Authorization']) {
+        headers['Authorization'] = `Bearer ${storedToken}`;
+      }
+    }
+
     try {
       const response = await fetch(url, {
         ...options,
@@ -915,16 +922,23 @@ class ApiClient {
    * User login with email and password.
    */
   async login(email: string, password: string): Promise<ApiResponse<LoginResponse>> {
-    return this.request<LoginResponse>('/auth/login', {
+    const res = await this.request<LoginResponse>('/auth/login', {
       method: 'POST',
       body: JSON.stringify({ email, password }),
     });
+    if (res.data?.session_token && typeof window !== 'undefined') {
+      localStorage.setItem('pharma_session_token', res.data.session_token);
+    }
+    return res;
   }
 
   /**
    * User logout, revokes session.
    */
   async logout(): Promise<ApiResponse<{ message: string }>> {
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem('pharma_session_token');
+    }
     return this.request<{ message: string }>('/auth/logout', {
       method: 'POST',
     });

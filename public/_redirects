@@ -1,0 +1,3 @@
+# Cloudflare Pages SPA Routing for Dynamic Equipment Routes
+/dashboard/equipment/* /dashboard/equipment/default.html 200
+
