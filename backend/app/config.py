@@ -33,6 +33,8 @@ class Config:
         "DATABASE_URL",
         f"sqlite:///{DEFAULT_SQLITE_PATH.as_posix()}"
     )
+    if SQLALCHEMY_DATABASE_URI:
+        SQLALCHEMY_DATABASE_URI = SQLALCHEMY_DATABASE_URI.strip().strip("'\"")
     # Fix potential postgres:// vs postgresql:// protocol in older connection strings
     if SQLALCHEMY_DATABASE_URI.startswith("postgres://"):
         SQLALCHEMY_DATABASE_URI = SQLALCHEMY_DATABASE_URI.replace("postgres://", "postgresql://", 1)

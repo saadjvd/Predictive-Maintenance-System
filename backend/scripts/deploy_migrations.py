@@ -44,7 +44,7 @@ def run_deployment_migrations() -> int:
     # Prefer unpooled direct connection for migrations when available (e.g. Neon PostgreSQL)
     unpooled_url = os.getenv("DATABASE_URL_UNPOOLED")
     if unpooled_url:
-        os.environ["DATABASE_URL"] = unpooled_url
+        os.environ["DATABASE_URL"] = unpooled_url.strip().strip("'\"")
 
     # Force migration bypass flags during migration runner initialization
     os.environ["SKIP_STARTUP_MIGRATION_CHECK"] = "true"
