@@ -40,7 +40,7 @@ def create_app(config_name=None):
     migrate.init_app(flask_app, db, directory=migrations_dir)
     cors.init_app(
         flask_app,
-        resources={r"/api/*": {"origins": flask_app.config.get("CORS_ORIGINS", "*")}},
+        resources={r"/api/*": {"origins": flask_app.config.get("CORS_ORIGINS", ["http://localhost:3000", r"^https://.*\.pages\.dev$"])}},
         supports_credentials=True
     )
     init_correlation_middleware(flask_app)
