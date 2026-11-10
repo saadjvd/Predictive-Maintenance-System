@@ -40,7 +40,7 @@ def create_app(config_name=None):
     migrate.init_app(flask_app, db, directory=migrations_dir)
     cors.init_app(
         flask_app,
-        resources={r"/api/*": {"origins": flask_app.config.get("CORS_ORIGINS", ["https://pharmapredict-ai.pages.dev", "http://localhost:3000", "http://127.0.0.1:3000"])}},
+        resources={r"/api/*": {"origins": flask_app.config.get("CORS_ORIGINS", ["https://cold-wood-def2.saadjvd54.workers.dev", "https://pharmapredict-ai.pages.dev", "http://localhost:3000", "http://127.0.0.1:3000"])}},
         supports_credentials=True
     )
     init_correlation_middleware(flask_app)
