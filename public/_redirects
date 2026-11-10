@@ -1,5 +1,2 @@
-# API Proxy to Cloudflare Quick Tunnel
-/api/* https://wed-thousands-kelkoo-centuries.trycloudflare.com/api/:splat 200
-
 # Cloudflare Pages SPA Routing for Dynamic Equipment Routes
 /dashboard/equipment/* /dashboard/equipment/default.html 200
