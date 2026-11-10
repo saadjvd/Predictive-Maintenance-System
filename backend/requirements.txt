@@ -6,6 +6,8 @@ SQLAlchemy==2.0.38
 psycopg2-binary==2.9.10
 python-dotenv==1.0.1
 pydantic==2.10.6
+gunicorn>=23.0.0
+redis>=5.2.0
 pytest==9.2.0
 pytest-asyncio==1.4.1
 asyncua==2.1.0

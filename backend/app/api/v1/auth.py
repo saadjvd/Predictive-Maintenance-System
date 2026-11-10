@@ -187,16 +187,25 @@ def get_current_user():
 @auth_bp.route("/seed", methods=["POST"])
 def seed_initial_data():
     """
-    Controlled bootstrap endpoint for local development and test environments.
-    Idempotently provisions default roles, Getz Pharma demo organization, sites, and standard test accounts.
+    Controlled bootstrap endpoint for initial environment initialization.
+    Permanently locks after initial seeding to prevent unauthorized modification.
     """
-    # Allow in non-production, or if explicit BOOTSTRAP_KEY matches
+    # Security Lockdown: Permanently reject if initial seed has already occurred
+    admin_exists = User.query.filter_by(email="admin@getzpharma.com").first() is not None
+    roles_exist = Role.query.first() is not None
+    if admin_exists and roles_exist:
+        return jsonify({
+            "error": "Forbidden",
+            "message": "Bootstrap seeding has already been completed and is locked for security."
+        }), 403
+
+    # Require explicit bootstrap authorization key for production/staging environments
     req_key = request.headers.get("X-Bootstrap-Key", "")
     expected_key = current_app.config.get("BOOTSTRAP_KEY", "pharma-predict-bootstrap-2026")
-    is_allowed = (current_app.config.get("ENV") != "production") or (req_key == expected_key)
+    is_allowed = (current_app.config.get("ENV") not in ("production", "staging")) or (req_key == expected_key)
 
     if not is_allowed:
-        return jsonify({"error": "Forbidden", "message": "Bootstrap endpoint disabled in production."}), 403
+        return jsonify({"error": "Forbidden", "message": "Bootstrap endpoint disabled or invalid bootstrap key."}), 403
 
     # 1. Provision Roles
     roles_dict = {}

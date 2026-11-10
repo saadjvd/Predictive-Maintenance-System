@@ -1,15 +1,16 @@
 # PharmaPredict AI — Production Deployment Architecture
 
 **Document Reference:** ARCH-PHARMAPREDICT-001  
-**Version:** 1.0.0  
-**Effective Date:** 2026-11-01  
-**Deployment Target:** High-Availability On-Premises Plant Cluster or Dedicated Private VPC
+**Version:** 2.0.0 (Phase 10 Enterprise Release)  
+**Effective Date:** 2026-11-05  
+**Deployment Target:** High-Availability On-Premises Plant Cluster, Multi-Site Edge, or Dedicated Private VPC  
+**Related Issues:** #68 (P10-F01), #69 (P10-F01-S01), #70 (P10-F01-S02)
 
 ---
 
 ## 1. System Topology Overview
 
-PharmaPredict AI follows a decoupled, resilient Edge-to-Core architectural pattern designed for high-availability industrial pharmaceutical operations:
+PharmaPredict AI follows a decoupled, resilient Edge-to-Core architectural pattern designed for high-availability industrial pharmaceutical operations across multi-site production facilities:
 
 ```
                   ┌──────────────────────────────────────────────┐
@@ -31,15 +32,21 @@ PharmaPredict AI follows a decoupled, resilient Edge-to-Core architectural patte
 │              Plant Enterprise Server Cluster (Purdue L4 DMZ)                │
 │                                                                            │
 │  ┌───────────────────────┐                    ┌─────────────────────────┐  │
-│  │   NGINX Reverse Proxy │ ──(Internal Net)──►│   Flask 3.0 Backend     │  │
+│  │   NGINX Reverse Proxy │ ──(Internal Net)──►│   Flask 3.1 Backend     │  │
 │  │   & TLS 1.3 Endpoint  │                    │   (Gunicorn / 4 Workers)│  │
 │  └───────────┬───────────┘                    └────────────┬────────────┘  │
 │              │                                             │               │
 │              ▼                                             ▼               │
 │  ┌───────────────────────┐                    ┌─────────────────────────┐  │
-│  │   Next.js 14 Client   │                    │ PostgreSQL 16 +         │  │
+│  │   Next.js 16 Client   │                    │ PostgreSQL 16 +         │  │
 │  │   Frontend Server     │                    │ TimescaleDB + pgvector  │  │
 │  └───────────────────────┘                    └─────────────────────────┘  │
+│                                                            │               │
+│                                                            ▼               │
+│                                               ┌─────────────────────────┐  │
+│                                               │ Redis 7 AOF Telemetry   │  │
+│                                               │ Cache & Queue Buffer    │  │
+│                                               └─────────────────────────┘  │
 └────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -91,3 +98,58 @@ PharmaPredict AI follows a decoupled, resilient Edge-to-Core architectural patte
 3. **Recovery Time Objective (RTO):** $\le 30\text{ minutes}$.
 4. **Recovery Point Objective (RPO):** $\le 1\text{ hour}$ (via WAL archiving).
 
+---
+
+## 5. Enterprise Containerization & Multi-Stage Images (Issue #69)
+
+### 5.1 Next.js 16 Production Frontend Container
+- **Base Image:** `node:20-alpine`
+- **Builder Stage:** Standalone bundle compilation with pnpm (`NEXT_OUTPUT_STANDALONE=true`).
+- **Runner Stage:** Hardened non-root user `nextjs` (UID 1001) in group `nodejs` (GID 1001).
+- **Security:** Root filesystem read-only, non-root execution, zero elevated capabilities (`CAP_DROP=ALL`).
+- **Healthcheck:** `wget --spider http://localhost:3000/` every 20 seconds.
+
+### 5.2 Flask 3.1 Production Backend Container
+- **Base Image:** `python:3.12-slim`
+- **WSGI Server:** Gunicorn with 4 workers, 2 threads, 120s timeout, stdout/stderr structured access logging.
+- **Non-Root Execution:** Dedicated system user `appuser` (UID 10001) in group `appgroup` (GID 10001).
+- **Probes:** Unversioned `/health/live` and `/health/ready` verified via curl.
+- **Orchestration:** Managed via `deploy/production/docker-compose.prod.yml` with persistent named volumes and dependency-ordering health checks.
+
+---
+
+## 6. Canonical Infrastructure Health Probes (Issue #70)
+
+PharmaPredict AI enforces a two-tier health probe architecture:
+
+| Endpoint | Target Audience | Semantics & Verification | Status Codes |
+|:---|:---|:---|:---:|
+| `GET /health/live` | Kubernetes Liveness Probe / Docker daemon | Ultra-low latency process responsiveness. Zero external I/O. | `200` |
+| `GET /health/ready` | Kubernetes Readiness Probe / Load Balancer | Validates mandatory dependencies: TimescaleDB (`SELECT 1`) and Redis (`PING`). | `200` (Ready)<br>`503` (Degraded) |
+| `GET /health/system` | Enterprise Ops & Monitoring Consoles | Process uptime, engine flavor, operational capability flags. All secrets/credentials masked. | `200` / `503` |
+| `GET /api/v1/health` | Application Frontend & API Clients | Versioned diagnostic contract with capability catalogue and database status. | `200` / `503` |
+
+---
+
+## 7. Automated Database Migration & Schema Safety (Issue #70)
+
+1. **Alembic / Flask-Migrate Governance:** Application schema versioning managed in `backend/migrations/`.
+2. **Startup Verification Runner:** `app.database_migrations.verify_database_on_startup()` executes during application initialization:
+   - Queries `alembic_version` in the active database.
+   - Compares against script head revision.
+   - In production mode (`ENFORCE_MIGRATION_CHECK=true`), fails fast with `RuntimeError` if migrations are unapplied, preventing split-brain schema mutations across replicas.
+3. **Automated Migration Runner:** Optional execution via `AUTO_MIGRATE=true` for single-instance staging/CI environments.
+
+---
+
+## 8. Environment Profiles & Security Controls
+
+PharmaPredict AI defines three distinct environment tiers:
+
+1. **Development (`FLASK_ENV=development`):** Local development with hot reload, SQLite or Docker Compose TimescaleDB fallback.
+2. **Staging (`FLASK_ENV=staging`):** Pre-production validation environment. Mandatory `SECRET_KEY` validation ($\ge 16$ characters) and migration check.
+3. **Production (`FLASK_ENV=production`):** Strict pharmaceutical validation.
+   - Rejects default dev keys; enforces cryptographically random `SECRET_KEY` ($\ge 32$ characters).
+   - Prohibits SQLite; enforces PostgreSQL/TimescaleDB.
+   - Enforces Secure, HttpOnly, SameSite session cookies.
+   - Enforces database migration check prior to serving traffic.

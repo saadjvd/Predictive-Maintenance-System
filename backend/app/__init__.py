@@ -3,6 +3,7 @@ from flask import Flask, jsonify
 from app.config import config_by_name
 from app.extensions import db, migrate, cors
 from app.api import api_v1_bp
+from app.health_probes import health_probes_bp
 from app.middleware import init_correlation_middleware
 import app.models  # noqa: F401
 
@@ -15,25 +16,60 @@ def create_app(config_name=None):
         config_name = os.getenv("FLASK_ENV", "development")
 
     flask_app = Flask(__name__)
-    config_obj = config_by_name.get(config_name, config_by_name["default"])
+
+    if isinstance(config_name, str):
+        env_name = config_name
+        config_obj = config_by_name.get(config_name, config_by_name["default"])
+    elif isinstance(config_name, type) or hasattr(config_name, "__dict__"):
+        config_obj = config_name
+        env_name = getattr(config_obj, "ENV", getattr(config_obj, "FLASK_ENV", "staging"))
+    else:
+        config_obj = config_by_name["default"]
+        env_name = "development"
+
+    # Strict configuration validation (e.g. Production secret keys, DB URIs)
+    if hasattr(config_obj, "validate") and callable(config_obj.validate):
+        config_obj.validate()
+
     flask_app.config.from_object(config_obj)
 
     # Initialize extensions
+    backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    migrations_dir = os.path.join(backend_dir, "migrations")
     db.init_app(flask_app)
-    migrate.init_app(flask_app, db)
+    migrate.init_app(flask_app, db, directory=migrations_dir)
     cors.init_app(
         flask_app,
-        resources={r"/api/*": {"origins": flask_app.config.get("CORS_ORIGINS", "*")}},
+        resources={r"/api/*": {"origins": flask_app.config.get("CORS_ORIGINS", ["https://cold-wood-def2.saadjvd54.workers.dev", "https://pharmapredict-ai.pages.dev", "http://localhost:3000", "http://127.0.0.1:3000"])}},
         supports_credentials=True
     )
     init_correlation_middleware(flask_app)
 
     with flask_app.app_context():
-        # Ensure database tables exist
-        db.create_all()
+        # In non-production environments, ensure tables are created automatically if needed
+        # (Skip db.create_all if in production/staging or if explicitly disabled/enforcing migrations)
+        should_create_all = (
+            env_name not in ("production", "staging")
+            and not flask_app.config.get("ENFORCE_MIGRATION_CHECK")
+            and not flask_app.config.get("SKIP_DB_CREATE_ALL")
+        )
+        if should_create_all:
+            db.create_all()
 
-    # Register blueprints
+    # Register canonical root-level infrastructure health probes (/health/live, /health/ready, /health/system)
+    flask_app.register_blueprint(health_probes_bp)
+
+    # Register versioned API blueprints (/api/v1/...)
     flask_app.register_blueprint(api_v1_bp)
+
+    # Startup database migration and schema safety verification
+    should_verify_startup = (
+        (env_name in ("production", "staging") or flask_app.config.get("ENFORCE_MIGRATION_CHECK"))
+        and not flask_app.config.get("SKIP_STARTUP_MIGRATION_CHECK")
+    )
+    if should_verify_startup:
+        from app.database_migrations import verify_database_on_startup
+        verify_database_on_startup(flask_app)
 
     # Register root diagnostic / health alias
     @flask_app.route("/", methods=["GET"])
@@ -73,10 +109,12 @@ def create_app(config_name=None):
                     <div class="btn-group">
                         <a href="http://localhost:3000" class="btn btn-primary" target="_blank">Open Frontend Web App (Port 3000) →</a>
                         <a href="http://localhost:3000/login" class="btn btn-secondary" target="_blank">Open Login Portal (Port 3000)</a>
+                        <a href="/health/live" class="btn btn-secondary">Inspect /health/live (Liveness)</a>
+                        <a href="/health/ready" class="btn btn-secondary">Inspect /health/ready (Readiness)</a>
                         <a href="/api/v1/health" class="btn btn-secondary">Inspect /api/v1/health (JSON)</a>
                     </div>
                     <div class="endpoints">
-                        <strong>Active Core API:</strong> <code>GET /api/v1/health</code> &bull; <code>POST /api/v1/auth/login</code> &bull; <code>GET /api/v1/sites</code>
+                        <strong>Active Core API:</strong> <code>GET /health/live</code> &bull; <code>GET /health/ready</code> &bull; <code>GET /api/v1/health</code> &bull; <code>POST /api/v1/auth/login</code>
                     </div>
                 </div>
             </body>
@@ -86,8 +124,13 @@ def create_app(config_name=None):
 
         return jsonify({
             "service": flask_app.config.get("APP_NAME", "PharmaPredict AI"),
-            "version": flask_app.config.get("APP_VERSION", "0.1.0"),
+            "version": flask_app.config.get("APP_VERSION", "1.0.0"),
             "api_documentation": "/api/v1/health",
+            "probes": {
+                "liveness": "/health/live",
+                "readiness": "/health/ready",
+                "system": "/health/system"
+            },
             "message": "PharmaPredict AI Backend Service is running."
         }), 200
 
@@ -111,4 +154,3 @@ def create_app(config_name=None):
         }), 500
 
     return flask_app
-

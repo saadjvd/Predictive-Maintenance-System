@@ -1,0 +1,6 @@
+# Cloudflare Pages SPA Routing
+# 1. Allow static Add Equipment page to be served cleanly
+/dashboard/equipment/new /dashboard/equipment/new 200
+
+# 2. Rewrite dynamic equipment IDs to the clean SPA detail entrypoint (without .html to prevent 307 redirect loops)
+/dashboard/equipment/:id /dashboard/equipment/default 200

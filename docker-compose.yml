@@ -15,7 +15,7 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U pharmapredict -d pharmapredict_db"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pharmapredict} -d ${POSTGRES_DB:-pharmapredict_db}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -29,6 +29,11 @@ services:
       - "6379:6379"
     volumes:
       - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
 
   # Flask Backend Service
   backend:
@@ -40,20 +45,50 @@ services:
     environment:
       FLASK_ENV: development
       FLASK_DEBUG: "True"
-      DATABASE_URL: postgresql://pharmapredict:pharma_secure_pass@timescaledb:5432/pharmapredict_db
-      TIMESCALEDB_URL: postgresql://pharmapredict:pharma_secure_pass@timescaledb:5432/pharmapredict_db
+      DATABASE_URL: postgresql://${POSTGRES_USER:-pharmapredict}:${POSTGRES_PASSWORD:-pharma_secure_pass}@timescaledb:5432/${POSTGRES_DB:-pharmapredict_db}
+      TIMESCALEDB_URL: postgresql://${POSTGRES_USER:-pharmapredict}:${POSTGRES_PASSWORD:-pharma_secure_pass}@timescaledb:5432/${POSTGRES_DB:-pharmapredict_db}
       REDIS_URL: redis://redis:6379/0
       CORS_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
-      SECRET_KEY: ${SECRET_KEY:-dev-secret-key-pharmapredict}
+      SECRET_KEY: ${SECRET_KEY:-dev-pharma-predict-secret-key-change-in-prod-2026}
     ports:
       - "5000:5000"
     depends_on:
       timescaledb:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     volumes:
       - ./backend:/app
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health/live"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # Next.js Frontend Service
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: pharmapredict-frontend
+    restart: unless-stopped
+    environment:
+      NODE_ENV: development
+      PORT: 3000
+      BACKEND_INTERNAL_URL: http://backend:5000
+    ports:
+      - "3000:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3000/ || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
 
 volumes:
   pgdata:
   redisdata:
-
