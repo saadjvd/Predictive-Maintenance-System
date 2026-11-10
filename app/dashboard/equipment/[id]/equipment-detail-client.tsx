@@ -48,7 +48,29 @@ import { DiscoveredTag } from '@/lib/api-client'
 export default function EquipmentDetailClient({ initialId }: { initialId?: string }) {
   const router = useRouter()
   const routeParams = useParams()
-  const machineId = (routeParams?.id as string) || initialId || ''
+  const [machineId, setMachineId] = useState<string>(() => {
+    const fromParams = routeParams?.id as string
+    if (fromParams && fromParams !== 'default') return fromParams
+    if (typeof window !== 'undefined') {
+      const parts = window.location.pathname.split('/').filter(Boolean)
+      const last = parts[parts.length - 1]
+      if (last && last !== 'default' && last !== 'equipment') return last
+    }
+    return initialId && initialId !== 'default' ? initialId : ''
+  })
+
+  useEffect(() => {
+    const fromParams = routeParams?.id as string
+    if (fromParams && fromParams !== 'default') {
+      setMachineId(fromParams)
+    } else if (typeof window !== 'undefined') {
+      const parts = window.location.pathname.split('/').filter(Boolean)
+      const last = parts[parts.length - 1]
+      if (last && last !== 'default' && last !== 'equipment') {
+        setMachineId(last)
+      }
+    }
+  }, [routeParams, initialId])
 
   const [activeTab, setActiveTab] = useState<'components' | 'discovery' | 'signals' | 'monitoring' | 'condition' | 'predictive' | 'diagnostics'>('components')
   const [initialTagForWizard, setInitialTagForWizard] = useState<DiscoveredTag | null>(null)
@@ -117,6 +139,12 @@ export default function EquipmentDetailClient({ initialId }: { initialId?: strin
   // Fetch machine and component data
   const fetchData = useCallback(
     async (isRefresh = false) => {
+      if (!machineId || machineId === 'default') {
+        setLoading(false)
+        setRefreshing(false)
+        return
+      }
+
       if (isRefresh) setRefreshing(true)
       else setLoading(true)
       setError(null)
